@@ -18,6 +18,7 @@ from app.api.routes import messages
 from app.api.routes import dining_rooms
 from app.api.routes import tables
 from app.api.routes import seat_assignments
+from app.api.routes import admin
 
 settings = get_settings()
 
@@ -61,7 +62,7 @@ app.include_router(messages.router, prefix="/api")
 app.include_router(dining_rooms.router, prefix="/api")
 app.include_router(tables.router, prefix="/api")
 app.include_router(seat_assignments.router, prefix="/api")
-
+app.include_router(admin.router, prefix="/api")
 
 def custom_openapi():
     if app.openapi_schema:
