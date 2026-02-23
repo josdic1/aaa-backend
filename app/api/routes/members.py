@@ -63,7 +63,8 @@ def get_member(
 
 
 # Update
-@router.put("/{member_id}", response_model=MemberRead)
+# app/api/routes/members.py
+@router.patch("/{member_id}", response_model=MemberRead)
 def update_member(
     member_id: int,
     payload: MemberUpdate,
@@ -93,20 +94,33 @@ def update_member(
 
 
 # Delete
-@router.delete("/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{member_id}", status_code=204)
 def delete_member(
     member_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     member = db.get(Member, member_id)
-
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
-    if member.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
+    if member.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
 
+    from app.models.reservation_attendee import ReservationAttendee
+
+    # Detach attendee rows that reference this member.
+    # Must set guest_name too — the check constraint requires
+    # member_id OR guest_name to be non-null, never both null.
+    attendees = db.query(ReservationAttendee)\
+        .filter(ReservationAttendee.member_id == member_id)\
+        .all()
+
+    for att in attendees:
+        att.guest_name = member.name  # preserve the name as a guest record
+        att.member_id = None
+
+    db.flush()  # apply the attendee updates before deleting the member
     db.delete(member)
     db.commit()
     return None

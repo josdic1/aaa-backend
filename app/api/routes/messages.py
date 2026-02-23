@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.api.deps.db import get_db
 from app.models.message import Message
 from app.models.reservation import Reservation
 from app.schemas.messages import MessageCreate, MessageResponse

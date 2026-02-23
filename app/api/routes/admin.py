@@ -284,6 +284,78 @@ def admin_delete_reservation(
     db.commit()
     return None
 
+# ADDITIONS FOR app/api/routes/admin.py
+# Add these two blocks anywhere after the existing ORDERS section
+
+# ══════════════════════════════════════════════
+# ATTENDEES (admin full list + CRUD)
+# ══════════════════════════════════════════════
+
+@router.get("/attendees")
+def admin_list_attendees(
+    reservation_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(ReservationAttendee)
+    if reservation_id:
+        q = q.filter(ReservationAttendee.reservation_id == reservation_id)
+    return q.order_by(ReservationAttendee.id.asc()).all()
+
+
+@router.patch("/attendees/{attendee_id}")
+def admin_update_attendee(
+    attendee_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    for k, v in payload.items():
+        if hasattr(attendee, k):
+            setattr(attendee, k, v)
+    db.commit()
+    db.refresh(attendee)
+    return attendee
+
+
+@router.delete("/attendees/{attendee_id}", status_code=204)
+def admin_delete_attendee(
+    attendee_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    db.delete(attendee)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# ORDERS — add PATCH for full status override
+# (your existing /fulfill only does fired→fulfilled)
+# ══════════════════════════════════════════════
+
+@router.patch("/orders/{order_id}")
+def admin_patch_order(
+    order_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if "status" in payload:
+        order.status = payload["status"]
+    db.commit()
+    db.refresh(order)
+    return order
+
 
 # ══════════════════════════════════════════════
 # MENU ITEMS
@@ -562,7 +634,7 @@ def admin_list_messages(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    q = db.query(Message)
+    q = db.query(Message).options(selectinload(Message.sender))
     if reservation_id:
         q = q.filter(Message.reservation_id == reservation_id)
     return q.order_by(Message.created_at.desc()).all()

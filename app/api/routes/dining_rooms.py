@@ -6,7 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.api.deps.db import get_db
 from app.models.dining_room import DiningRoom
 from app.schemas import DiningRoomCreate, DiningRoomRead
 from app.api.deps.auth import get_current_user

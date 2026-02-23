@@ -1,0 +1,156 @@
+[
+  {
+    "name": "Classic Hot Dog",
+    "description": "All-beef frank on a toasted brioche bun with yellow mustard, ketchup, and relish.",
+    "price_cents": 1400,
+    "dietary_restrictions": ["dairy_free"],
+    "is_active": true
+  },
+  {
+    "name": "Chicago Dog",
+    "description": "All-beef frank with yellow mustard, neon relish, sport peppers, tomato, onion, celery salt, and a pickle spear. No ketchup. Ever.",
+    "price_cents": 1600,
+    "dietary_restrictions": ["dairy_free"],
+    "is_active": true
+  },
+  {
+    "name": "Chili Cheese Dog",
+    "description": "All-beef frank topped with house chili and shredded sharp cheddar on a steamed bun.",
+    "price_cents": 1800,
+    "dietary_restrictions": [],
+    "is_active": true
+  },
+  {
+    "name": "Veggie Dog",
+    "description": "Plant-based frank on a toasted bun with all the fixings.",
+    "price_cents": 1500,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian"],
+    "is_active": true
+  },
+  {
+    "name": "Classic Caesar Salad",
+    "description": "Crisp romaine, house-made Caesar dressing, shaved Parmesan, and garlic croutons.",
+    "price_cents": 1600,
+    "dietary_restrictions": [],
+    "is_active": true
+  },
+  {
+    "name": "Caesar Salad — No Croutons",
+    "description": "Classic Caesar without the croutons. Gluten-free friendly.",
+    "price_cents": 1600,
+    "dietary_restrictions": ["gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Caesar Salad with Grilled Salmon",
+    "description": "Classic Caesar topped with a pan-seared Atlantic salmon fillet.",
+    "price_cents": 2600,
+    "dietary_restrictions": [],
+    "is_active": true
+  },
+  {
+    "name": "Miso Glazed Grilled Salmon",
+    "description": "Atlantic salmon fillet with white miso, mirin, and sesame glaze, grilled over charcoal. Served with steamed jasmine rice and pickled cucumbers.",
+    "price_cents": 3200,
+    "dietary_restrictions": ["gluten_free", "dairy_free"],
+    "is_active": true
+  },
+  {
+    "name": "Salmon Club Sandwich",
+    "description": "Flaked grilled salmon, avocado, tomato, butter lettuce, and lemon aioli on toasted sourdough.",
+    "price_cents": 2200,
+    "dietary_restrictions": ["dairy_free"],
+    "is_active": true
+  },
+  {
+    "name": "French Fries",
+    "description": "Hand-cut russet potatoes, fried twice, served with house sauce.",
+    "price_cents": 900,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Parmesan Fries",
+    "description": "French fries tossed with shaved Parmesan, fresh parsley, and garlic butter.",
+    "price_cents": 1100,
+    "dietary_restrictions": ["vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Chili Cheese Fries",
+    "description": "French fries loaded with house chili and sharp cheddar.",
+    "price_cents": 1400,
+    "dietary_restrictions": [],
+    "is_active": true
+  },
+  {
+    "name": "Onion Rings",
+    "description": "Beer-battered thick-cut onion rings with chipotle ranch.",
+    "price_cents": 1000,
+    "dietary_restrictions": ["vegetarian"],
+    "is_active": true
+  },
+  {
+    "name": "Club Sandwich",
+    "description": "Triple-decker with turkey, bacon, Swiss, tomato, lettuce, and mayo on toasted white.",
+    "price_cents": 1900,
+    "dietary_restrictions": [],
+    "is_active": true
+  },
+  {
+    "name": "Grilled Cheese",
+    "description": "Three-cheese blend on sourdough with a cup of tomato bisque.",
+    "price_cents": 1400,
+    "dietary_restrictions": ["vegetarian"],
+    "is_active": true
+  },
+  {
+    "name": "Lemonade",
+    "description": "Fresh-squeezed house lemonade.",
+    "price_cents": 600,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Iced Tea",
+    "description": "Unsweetened black iced tea with lemon.",
+    "price_cents": 500,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Arnold Palmer",
+    "description": "Half iced tea, half lemonade.",
+    "price_cents": 600,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Sparkling Water",
+    "description": "San Pellegrino, 500ml.",
+    "price_cents": 400,
+    "dietary_restrictions": ["dairy_free", "vegan", "vegetarian", "gluten_free"],
+    "is_active": true
+  },
+  {
+    "name": "Chocolate Chip Cookie",
+    "description": "Warm, fresh-baked chocolate chip cookie.",
+    "price_cents": 500,
+    "dietary_restrictions": ["vegetarian"],
+    "is_active": true
+  },
+  {
+    "name": "Brownie",
+    "description": "Dense fudge brownie with a crinkle top.",
+    "price_cents": 600,
+    "dietary_restrictions": ["vegetarian"],
+    "is_active": true
+  },
+  {
+    "name": "Ice Cream (2 scoops)",
+    "description": "Ask your server for today's flavors.",
+    "price_cents": 700,
+    "dietary_restrictions": ["vegetarian", "gluten_free"],
+    "is_active": true
+  }
+]

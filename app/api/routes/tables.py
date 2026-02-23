@@ -54,6 +54,8 @@ def create_table(
     return table
 
 
+from sqlalchemy.exc import IntegrityError
+
 @router.delete("/{table_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_table(
     table_id: int,
@@ -64,6 +66,13 @@ def delete_table(
     table = db.get(Table, table_id)
     if not table:
         raise HTTPException(status_code=404, detail="Table not found")
-    db.delete(table)
-    db.commit()
+    try:
+        db.delete(table)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete table — it has active seat assignments. Remove assignments first."
+        )
     return None

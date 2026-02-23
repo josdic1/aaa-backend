@@ -10,6 +10,10 @@ class UserCreate(BaseModel):
     password: str
     role: Optional[str] = "member"  # optional, defaults to member
 
+class UserSignup(BaseModel):
+    email: str
+    password: str
+    invite_code: Optional[str] = None 
 
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -24,3 +28,4 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     password: Optional[str] = None
     role: Optional[str] = None  # optional for updates
+

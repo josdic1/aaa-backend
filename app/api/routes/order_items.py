@@ -99,3 +99,17 @@ def update_order_item(
     db.commit()
     db.refresh(item)
     return item
+
+@router.delete("/{order_item_id}", status_code=204)
+def delete_order_item(
+    order_item_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    item = db.get(OrderItem, order_item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+    _require_order_access(db, user, item.order_id)
+    db.delete(item)
+    db.commit()
+    return None

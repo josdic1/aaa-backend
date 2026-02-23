@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 class User(Base):
     __tablename__ = "users"
-
+    ### there is no name field in the user ##
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
@@ -28,6 +28,9 @@ class User(Base):
         server_default="member",
         index=True,
     )
+
+    # NOTE: This field is stored but not yet read by any permission logic.
+    # Future use: per-user overrides on top of role-based access.   
     permissions: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSON,
         nullable=True,
@@ -47,3 +50,4 @@ class User(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+

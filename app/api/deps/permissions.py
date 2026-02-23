@@ -7,6 +7,7 @@ from app.api.deps.db import get_db
 from app.models.user import User
 
 
+
 def require_user(user: User = Depends(get_current_user)) -> User:
     """Ensure a logged-in user exists."""
     return user

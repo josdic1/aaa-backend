@@ -136,8 +136,10 @@ def get_reservation_bootstrap(
         .first()
     )
 
+    # FIX: Check for None BEFORE accessing attributes like .user_id or .attendees
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
+        
     if reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
@@ -145,18 +147,23 @@ def get_reservation_bootstrap(
     created = False
     for attendee in reservation.attendees:
         if attendee.order is None:
-            new_order = Order(attendee_id=attendee.id, status="open")
-            db.add(new_order)
+            existing = db.query(Order).filter(Order.attendee_id == attendee.id).first()
+            if not existing:
+                db.add(Order(attendee_id=attendee.id, status="open"))
+                db.commit()
             created = True
 
     if created:
         db.commit()
+        # Refresh the reservation to include newly created orders
         db.refresh(reservation)
 
+    # Pylance now knows reservation is not None here
     attendees = reservation.attendees
+    messages = reservation.messages
+    
     orders = [a.order for a in attendees if a.order]
     order_items = [item for o in orders for item in o.items]
-    messages = reservation.messages
 
     party_size = len(attendees)
     order_totals = {}
@@ -167,9 +174,7 @@ def get_reservation_bootstrap(
         for item in order.items:
             if item.status != "selected":
                 continue
-            if item.price_cents_snapshot is None:
-                continue
-            if item.quantity is None:
+            if item.price_cents_snapshot is None or item.quantity is None:
                 continue
             total += item.price_cents_snapshot * item.quantity
 
