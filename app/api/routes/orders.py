@@ -11,7 +11,10 @@ from app.api.deps.auth import get_current_user
 from app.api.deps.db import get_db
 from app.models.order import Order
 from app.models.order_item import OrderItem
+from app.models.reservation import Reservation
 from app.models.reservation_attendee import ReservationAttendee
+from app.models.seat_assignment import SeatAssignment  # Added Import
+from app.models.table import Table                    # Added Import
 from app.models.user import User
 from app.schemas.orders import OrderEnsureRequest, OrderResponse, OrderUpdateRequest
 
@@ -53,7 +56,13 @@ def update_order(
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+
     _require_attendee_ownership(db, user, order.attendee_id)
+
+    # Lifecycle lock: members cannot edit a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
     data = payload.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(order, k, v)
@@ -75,7 +84,7 @@ def fire_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    attendee = _require_attendee_ownership(db, user, order.attendee_id)
+    _require_attendee_ownership(db, user, order.attendee_id)
 
     if order.status == "fired":
         raise HTTPException(status_code=400, detail="Order already fired")
@@ -100,10 +109,22 @@ def get_chit(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    order = db.query(Order).options(
-        selectinload(Order.items),
-        selectinload(Order.attendee),
-    ).filter(Order.id == order_id).first()
+    # Fixed Query: Added deep selectinload to reach the Room and Table name
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.attendee)
+                .selectinload(ReservationAttendee.reservation)
+                .selectinload(Reservation.seat_assignment)
+                .selectinload(SeatAssignment.table)
+                .selectinload(Table.dining_room),
+            selectinload(Order.attendee)
+                .selectinload(ReservationAttendee.member),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
 
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -111,9 +132,9 @@ def get_chit(
     attendee = order.attendee
     reservation = attendee.reservation
 
-    # seat assignment if exists
+    # seat assignment logic
     seat_info = "Unassigned"
-    if reservation.seat_assignment:
+    if reservation.seat_assignment and reservation.seat_assignment.table:
         table = reservation.seat_assignment.table
         room = table.dining_room
         seat_info = f"{room.name} — {table.name}"
@@ -127,10 +148,10 @@ def get_chit(
     # dietary restrictions
     dietary = ", ".join(attendee.dietary_restrictions) if attendee.dietary_restrictions else "None"
 
-    # items
+    # items: Changed to include 'selected' so you can print before firing if needed
     items_html = ""
     for item in order.items:
-        if item.status == "confirmed":
+        if item.status in ("selected", "confirmed"):
             items_html += f"""
             <tr>
                 <td>{item.name_snapshot or "—"}</td>
@@ -173,7 +194,7 @@ def get_chit(
 </div>
 <table>
   <thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead>
-  <tbody>{items_html}</tbody>
+  <tbody>{items_html if items_html else "<tr><td colspan='3'>No items confirmed</td></tr>"}</tbody>
 </table>
 <div class="footer">Order #{order_id} — Abeyton Lodge</div>
 <br>

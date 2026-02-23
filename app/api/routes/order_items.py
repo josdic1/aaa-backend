@@ -56,7 +56,11 @@ def add_item_to_order(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    _require_order_access(db, user, order_id)
+    order = _require_order_access(db, user, order_id)
+
+    # Lifecycle lock: members cannot add items to a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
 
     menu_item = db.get(MenuItem, payload.menu_item_id)
     if not menu_item:
@@ -68,7 +72,6 @@ def add_item_to_order(
         quantity=payload.quantity,
         status=payload.status,
         meta=payload.meta,
-        # history snapshots
         name_snapshot=menu_item.name,
         price_cents_snapshot=menu_item.price_cents,
     )
@@ -90,7 +93,11 @@ def update_order_item(
     if not item:
         raise HTTPException(status_code=404, detail="Order item not found")
 
-    _require_order_access(db, user, item.order_id)
+    order = _require_order_access(db, user, item.order_id)
+
+    # Lifecycle lock: members cannot edit items on a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
 
     data = payload.model_dump(exclude_unset=True)
     for k, v in data.items():
@@ -99,6 +106,7 @@ def update_order_item(
     db.commit()
     db.refresh(item)
     return item
+
 
 @router.delete("/{order_item_id}", status_code=204)
 def delete_order_item(
@@ -109,7 +117,13 @@ def delete_order_item(
     item = db.get(OrderItem, order_item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Order item not found")
-    _require_order_access(db, user, item.order_id)
+
+    order = _require_order_access(db, user, item.order_id)
+
+    # Lifecycle lock: members cannot remove items from a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
     db.delete(item)
     db.commit()
     return None

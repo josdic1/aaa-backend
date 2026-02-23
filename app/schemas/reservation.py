@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 from datetime import datetime, date, time
-from typing import Optional
+from typing import Optional, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+ReservationStatus = Literal["draft", "confirmed", "cancelled"]
 
 
 class ReservationBase(BaseModel):
     date: date
     start_time: time
     end_time: Optional[time] = None
-    status: Optional[str] = "draft"
+    status: ReservationStatus = "draft"
     notes: Optional[str] = Field(None, max_length=500)
 
 
@@ -24,7 +27,7 @@ class ReservationUpdate(BaseModel):
     date: Optional[date] = None
     start_time: Optional[time] = None
     end_time: Optional[time] = None
-    status: Optional[str] = None
+    status: Optional[ReservationStatus] = None
     notes: Optional[str] = None
 
 

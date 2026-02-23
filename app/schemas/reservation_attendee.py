@@ -52,6 +52,15 @@ class ReservationAttendeeUpdate(BaseModel):
     selection_confirmed: Optional[bool] = None
 
 
+class MemberReadNested(BaseModel):
+    """Minimal member read for nesting inside attendee — avoids circular import with member schema."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    email: Optional[str] = None
+
+
 class ReservationAttendeeRead(ReservationAttendeeBase):
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,3 +68,4 @@ class ReservationAttendeeRead(ReservationAttendeeBase):
     reservation_id: int
     created_at: datetime
     updated_at: datetime
+    member: Optional[MemberReadNested] = None

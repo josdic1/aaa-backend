@@ -19,6 +19,21 @@ from app.schemas.reservation_bootstrap import ReservationBootstrapResponse
 router = APIRouter(prefix="/reservations", tags=["reservations"])
 
 
+def _bootstrap_query(db: Session, reservation_id: int):
+    return (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees).selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.order)
+            .selectinload(Order.items),
+            selectinload(Reservation.messages),
+        )
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+
+
 # ── LIST ──────────────────────────────────────────────────
 @router.get("", response_model=List[ReservationRead])
 def list_reservations(
@@ -29,14 +44,12 @@ def list_reservations(
     current_user: User = Depends(get_current_user),
 ):
     q = db.query(Reservation).filter(Reservation.user_id == current_user.id)
-
     if status:
         q = q.filter(Reservation.status == status)
     if from_date:
         q = q.filter(Reservation.date >= from_date)
     if to_date:
         q = q.filter(Reservation.date <= to_date)
-
     return q.order_by(Reservation.date.asc(), Reservation.start_time.asc()).all()
 
 
@@ -76,6 +89,12 @@ def get_reservation(
     return reservation
 
 
+def _normalize_status(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    return s.strip().lower()
+
+
 # ── UPDATE ────────────────────────────────────────────────
 @router.patch("/{reservation_id}", response_model=ReservationRead)
 def update_reservation(
@@ -91,6 +110,47 @@ def update_reservation(
         raise HTTPException(status_code=403, detail="Not allowed")
 
     data = payload.model_dump(exclude_unset=True)
+
+    # Normalize status if present
+    if "status" in data:
+        data["status"] = _normalize_status(data["status"])
+
+    current_status = _normalize_status(reservation.status)
+
+    # Hard lifecycle rules:
+    # - draft: can edit fields; can change status to confirmed/cancelled/draft
+    # - confirmed: cannot edit fields; can change status to cancelled (and optionally back to draft)
+    # - cancelled: cannot edit fields; can change status to draft
+    if current_status in ("confirmed", "cancelled"):
+        allowed_fields = {"status"}
+        disallowed = set(data.keys()) - allowed_fields
+        if disallowed:
+            raise HTTPException(
+                status_code=409,
+                detail="Reservation is locked. Only status changes are allowed.",
+            )
+
+        next_status = data.get("status")
+        if next_status is None:
+            # no-op patch is fine
+            pass
+        else:
+            if current_status == "confirmed" and next_status not in ("cancelled", "draft", "confirmed"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Confirmed reservations can only be cancelled or restored to draft.",
+                )
+            if current_status == "cancelled" and next_status not in ("draft", "cancelled"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cancelled reservations can only be restored to draft.",
+                )
+
+    # If currently draft, validate status value if provided
+    if current_status == "draft" and "status" in data and data["status"] is not None:
+        if data["status"] not in ("draft", "confirmed", "cancelled"):
+            raise HTTPException(status_code=422, detail="Invalid status")
+
     for k, v in data.items():
         setattr(reservation, k, v)
 
@@ -111,7 +171,11 @@ def delete_reservation(
         raise HTTPException(status_code=404, detail="Reservation not found")
     if reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
-
+    if reservation.status not in ("draft", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a confirmed reservation.",
+        )
     db.delete(reservation)
     db.commit()
     return None
@@ -124,47 +188,33 @@ def get_reservation_bootstrap(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    reservation = (
-        db.query(Reservation)
-        .options(
-            selectinload(Reservation.attendees)
-            .selectinload(ReservationAttendee.order)
-            .selectinload(Order.items),
-            selectinload(Reservation.messages),
-        )
-        .filter(Reservation.id == reservation_id)
-        .first()
-    )
+    reservation = _bootstrap_query(db, reservation_id)
 
-    # FIX: Check for None BEFORE accessing attributes like .user_id or .attendees
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-        
+
     if reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
-    # ensure every attendee has an order
+    # Ensure every attendee has an order
     created = False
     for attendee in reservation.attendees:
-        if attendee.order is None:
-            existing = db.query(Order).filter(Order.attendee_id == attendee.id).first()
-            if not existing:
-                db.add(Order(attendee_id=attendee.id, status="open"))
-                db.commit()
+        existing = db.query(Order).filter(Order.attendee_id == attendee.id).first()
+        if not existing:
+            db.add(Order(attendee_id=attendee.id, status="open"))
+            db.flush()
             created = True
 
     if created:
         db.commit()
-        # Refresh the reservation to include newly created orders
-        db.refresh(reservation)
+        reservation = _bootstrap_query(db, reservation_id)
+        if not reservation:
+            raise HTTPException(status_code=404, detail="Reservation not found")
 
-    # Pylance now knows reservation is not None here
     attendees = reservation.attendees
     messages = reservation.messages
-    
     orders = [a.order for a in attendees if a.order]
     order_items = [item for o in orders for item in o.items]
-
     party_size = len(attendees)
     order_totals = {}
     reservation_total = 0
@@ -177,7 +227,6 @@ def get_reservation_bootstrap(
             if item.price_cents_snapshot is None or item.quantity is None:
                 continue
             total += item.price_cents_snapshot * item.quantity
-
         order_totals[order.id] = total
         reservation_total += total
 

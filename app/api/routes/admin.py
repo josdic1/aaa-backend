@@ -282,9 +282,55 @@ def admin_delete_reservation(
     db.commit()
     return None
 
-# ADDITIONS FOR app/api/routes/admin.py
-# Add these two blocks anywhere after the existing ORDERS section
+@router.get("/reservations/{reservation_id}/bootstrap")
+def admin_reservation_bootstrap(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from app.models.order import Order
+    from sqlalchemy.orm import selectinload
 
+    reservation = (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.order)
+            .selectinload(Order.items),
+            selectinload(Reservation.messages),
+        )
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    attendees = reservation.attendees
+    orders = [a.order for a in attendees if a.order]
+    order_items = [item for o in orders for item in o.items]
+    order_totals = {}
+    reservation_total = 0
+    for order in orders:
+        total = sum(
+            i.price_cents_snapshot * i.quantity
+            for i in order.items
+            if i.status == "selected" and i.price_cents_snapshot and i.quantity
+        )
+        order_totals[order.id] = total
+        reservation_total += total
+
+    return {
+        "reservation": reservation,
+        "party_size": len(attendees),
+        "attendees": attendees,
+        "orders": orders,
+        "order_items": order_items,
+        "order_totals": order_totals,
+        "reservation_total": reservation_total,
+        "messages": reservation.messages,
+    }
 # ══════════════════════════════════════════════
 # ATTENDEES (admin full list + CRUD)
 # ══════════════════════════════════════════════
