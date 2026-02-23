@@ -1,12 +1,12 @@
 # app/api/routes/menu_items.py
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.deps.auth import get_current_user
+from app.api.deps.auth import get_current_user, get_current_user_optional
 from app.api.deps.db import get_db
 from app.models.menu_item import MenuItem
 from app.models.user import User
@@ -26,12 +26,14 @@ def require_admin(user: User) -> None:
 
 @router.get("", response_model=List[MenuItemResponse])
 def list_menu_items(
-    include_inactive: bool = Query(False, description="Include inactive menu items (admin/staff use)"),
+    include_inactive: bool = Query(False, description="Include inactive items (admin only)"),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: Optional[User] = Depends(get_current_user_optional),  # public — no auth required
 ):
     q = db.query(MenuItem)
-    if not include_inactive or user.role != "admin":
+    # Only admins with include_inactive=true see inactive items
+    # Unauthenticated users, members, staff — active only
+    if not include_inactive or not user or user.role != "admin":
         q = q.filter(MenuItem.is_active.is_(True))
     return q.order_by(MenuItem.name.asc()).all()
 
