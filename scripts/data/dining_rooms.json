@@ -1,0 +1,23 @@
+[
+  { "dining_room": "Breakfast Nook", "name": "Table 1", "seat_count": 6 },
+  { "dining_room": "Card Room", "name": "Table 1", "seat_count": 10 },
+  { "dining_room": "Croquet Court", "name": "Table 1", "seat_count": 6 },
+  { "dining_room": "Croquet Court", "name": "Table 2", "seat_count": 6 },
+  { "dining_room": "Croquet Court", "name": "Table 3", "seat_count": 6 },
+  { "dining_room": "Living Room", "name": "Table 1", "seat_count": 6 },
+  { "dining_room": "Living Room", "name": "Table 2", "seat_count": 6 },
+  { "dining_room": "Living Room", "name": "Table 3", "seat_count": 6 },
+  { "dining_room": "Pool", "name": "Table 1", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 2", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 3", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 4", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 5", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 6", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 7", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 8", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 9", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 10", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 11", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 12", "seat_count": 5 },
+  { "dining_room": "Pool", "name": "Table 13", "seat_count": 6 }
+]

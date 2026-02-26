@@ -1,14 +1,16 @@
 [project]
 name = "aaa-backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "FastAPI backend"
 readme = "README.md"
 requires-python = ">=3.12"
+# Dependencies go HERE, under [project]
 dependencies = [
     "alembic>=1.18.4",
     "bcrypt<4",
     "fastapi>=0.129.0",
     "passlib[bcrypt]>=1.7.4",
+    "psycopg2-binary>=2.9.11",
     "psycopg[binary]>=3.3.3",
     "pydantic-settings>=2.13.1",
     "pydantic[email]>=2.12.5",
@@ -18,3 +20,16 @@ dependencies = [
     "sqlalchemy>=2.0.46",
     "uvicorn[standard]>=0.41.0",
 ]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

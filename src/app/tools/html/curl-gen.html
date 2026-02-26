@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AAA curl gen</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;700;800&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0d0d;
+    --surface: #141414;
+    --border: #222;
+    --accent: #e8ff47;
+    --accent2: #ff6b35;
+    --text: #e8e8e8;
+    --muted: #555;
+    --green: #4ade80;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --orange: #fb923c;
+    --purple: #c084fc;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; }
+  body { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 56px 1fr; height: 100vh; overflow: hidden; }
+
+  /* TOPBAR */
+  .topbar {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 20px;
+  }
+  .topbar-title { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 15px; letter-spacing: 0.05em; color: var(--accent); flex-shrink: 0; }
+
+  .base-url-wrap { display: flex; align-items: center; gap: 8px; margin-left: 16px; }
+  .base-url-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .base-url-input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 10px;
+    width: 200px; border-radius: 3px; outline: none;
+  }
+  .base-url-input:focus { border-color: #444; }
+
+  .reload-btn {
+    background: #1a1a1a; border: 1px solid var(--border); color: var(--accent);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+    padding: 5px 12px; border-radius: 3px; cursor: pointer; white-space: nowrap;
+  }
+  .reload-btn:hover { background: #222; }
+
+  .load-status { font-size: 10px; padding: 3px 8px; border-radius: 2px; font-weight: 600; white-space: nowrap; }
+  .load-status.ok      { background: #1a2e1a; color: var(--green); }
+  .load-status.err     { background: #2e1a1a; color: var(--red); }
+  .load-status.loading { background: #1a1f2e; color: var(--blue); }
+  .load-status.waiting { background: #1a1a1a; color: var(--muted); }
+
+  .token-area { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .token-label { font-size: 11px; color: var(--muted); }
+  .token-input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--accent);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 5px 10px;
+    width: 280px; border-radius: 3px; outline: none;
+  }
+  .token-input:focus { border-color: var(--accent); }
+  .token-input::placeholder { color: var(--muted); }
+  .token-status { font-size: 10px; padding: 3px 8px; border-radius: 2px; font-weight: 600; }
+  .token-status.set   { background: #1a2e1a; color: var(--green); }
+  .token-status.unset { background: #2e1a1a; color: var(--red); }
+
+  /* SIDEBAR */
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px 0; }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .tag-group { margin-bottom: 4px; }
+  .tag-header {
+    font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    padding: 8px 16px 4px;
+  }
+  .route-btn {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 16px;
+    background: none; border: none; cursor: pointer; text-align: left;
+    transition: background 0.1s; font-family: 'JetBrains Mono', monospace;
+  }
+  .route-btn:hover { background: rgba(255,255,255,0.04); }
+  .route-btn.active { background: rgba(232,255,71,0.07); }
+  .route-btn.active .route-path { color: var(--accent); }
+
+  .method-badge {
+    font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 2px;
+    min-width: 44px; text-align: center; letter-spacing: 0.05em; flex-shrink: 0;
+  }
+  .GET    { background: #0e2a1a; color: var(--green); }
+  .POST   { background: #1a1f2e; color: var(--blue); }
+  .PUT    { background: #2e1f0e; color: var(--orange); }
+  .PATCH  { background: #2a1f2e; color: var(--purple); }
+  .DELETE { background: #2e0e0e; color: var(--red); }
+
+  .route-path { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* MAIN */
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+
+  .main-header {
+    padding: 16px 24px 12px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .main-path { font-size: 14px; color: var(--muted); }
+  .main-desc { font-size: 11px; color: #444; margin-left: auto; }
+
+  .main-body { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+  .main-body::-webkit-scrollbar { width: 4px; }
+  .main-body::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .section-label { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+
+  .field-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field-label { font-size: 11px; color: #aaa; }
+  .field-required { color: var(--accent2); margin-left: 3px; }
+  .field-input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 7px 10px;
+    border-radius: 3px; outline: none; width: 100%; transition: border-color 0.15s;
+  }
+  .field-input:focus { border-color: #444; }
+  .field-hint { font-size: 10px; color: var(--muted); }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  .generate-btn {
+    background: var(--accent); color: #000; border: none;
+    font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 800;
+    letter-spacing: 0.05em; padding: 10px 20px; border-radius: 3px; cursor: pointer;
+    align-self: flex-start; transition: opacity 0.15s, transform 0.1s;
+  }
+  .generate-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+  .generate-btn:active { transform: translateY(0); }
+
+  .output-block {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 3px;
+    padding: 14px 16px; font-size: 12px; line-height: 1.7; white-space: pre-wrap;
+    word-break: break-all; color: #ccc; position: relative; min-height: 60px;
+  }
+  .copy-btn {
+    position: absolute; top: 8px; right: 8px; background: #222;
+    border: 1px solid var(--border); color: var(--text);
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    padding: 4px 10px; border-radius: 2px; cursor: pointer;
+  }
+  .copy-btn:hover { background: #333; }
+  .copy-btn.copied { background: #1a2e1a; color: var(--green); border-color: var(--green); }
+
+  .token-warn {
+    font-size: 11px; color: var(--accent2); background: #1f150a;
+    border: 1px solid #3d2510; border-radius: 3px; padding: 8px 12px; display: none;
+  }
+  .token-warn.visible { display: block; }
+
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 8px; color: var(--muted);
+  }
+  .empty-state-title { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800; color: #333; }
+  .empty-state-sub { font-size: 11px; }
+
+  .schema-note { font-size: 10px; color: var(--muted); background: #181818; border: 1px solid var(--border); border-radius: 2px; padding: 6px 10px; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-title">AAA // curl gen</div>
+
+  <div class="base-url-wrap">
+    <span class="base-url-label">base url</span>
+    <input class="base-url-input" id="baseUrlInput" value="http://localhost:8080" />
+    <button class="reload-btn" id="reloadBtn">↺ LOAD ROUTES</button>
+    <span class="load-status waiting" id="loadStatus">WAITING</span>
+  </div>
+
+  <div class="token-area">
+    <span class="token-label">Bearer token</span>
+    <input class="token-input" id="tokenInput" type="text" placeholder="paste your JWT here..." />
+    <span class="token-status unset" id="tokenStatus">NO TOKEN</span>
+  </div>
+</div>
+
+<div class="sidebar" id="sidebar">
+  <div style="padding:20px 16px;font-size:11px;color:#444;">enter base url and hit LOAD ROUTES</div>
+</div>
+
+<div class="main" id="main">
+  <div class="empty-state">
+    <div class="empty-state-title">not loaded</div>
+    <div class="empty-state-sub">hit LOAD ROUTES to fetch your openapi spec</div>
+  </div>
+</div>
+
+<script>
+const TOKEN_KEY = "aaa.jwt";
+
+let token = localStorage.getItem(TOKEN_KEY) || "";
+let currentRoute = null;
+
+// ── TOKEN
+const tokenInput = document.getElementById('tokenInput');
+const tokenStatus = document.getElementById('tokenStatus');
+
+// seed UI
+tokenInput.value = token;
+tokenStatus.textContent = token ? 'TOKEN SET' : 'NO TOKEN';
+tokenStatus.className = `token-status ${token ? 'set' : 'unset'}`;
+
+tokenInput.addEventListener('input', () => {
+  token = tokenInput.value.trim();
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+
+  tokenStatus.textContent = token ? 'TOKEN SET' : 'NO TOKEN';
+  tokenStatus.className = `token-status ${token ? 'set' : 'unset'}`;
+  if (currentRoute) renderMain(currentRoute);
+});
+
+// ── LOAD SPEC
+document.getElementById('reloadBtn').addEventListener('click', loadSpec);
+
+async function loadSpec() {
+  const base = document.getElementById('baseUrlInput').value.trim().replace(/\/$/, '');
+  const statusEl = document.getElementById('loadStatus');
+  statusEl.textContent = 'LOADING...';
+  statusEl.className = 'load-status loading';
+
+  try {
+    const res = await fetch(`${base}/openapi.json`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const spec = await res.json();
+    const routes = parseRoutes(spec);
+    statusEl.textContent = `${routes.length} ROUTES`;
+    statusEl.className = 'load-status ok';
+    buildSidebar(routes, base);
+    resetMain();
+    currentRoute = null;
+  } catch(e) {
+    statusEl.textContent = 'FAILED';
+    statusEl.className = 'load-status err';
+    document.getElementById('sidebar').innerHTML =
+      `<div style="padding:16px;font-size:11px;color:#f87171;">
+        Could not reach ${base}/openapi.json<br><br>${e.message}<br><br>
+        <span style="color:#555;">Make sure your backend is running and CORS allows this origin.</span>
+      </div>`;
+  }
+}
+
+// ── PARSE OPENAPI SPEC
+function parseRoutes(spec) {
+  const routes = [];
+  const HTTP_METHODS = ['get','post','put','patch','delete'];
+
+  Object.entries(spec.paths || {}).forEach(([path, pathItem]) => {
+    HTTP_METHODS.forEach(method => {
+      const op = pathItem[method];
+      if (!op) return;
+
+      const tag = (op.tags && op.tags[0]) || 'misc';
+
+      const pathParams = (op.parameters || [])
+        .filter(p => p.in === 'path')
+        .map(p => ({ name: p.name, required: !!p.required, type: p.schema?.type || 'string' }));
+
+      const queryParams = (op.parameters || [])
+        .filter(p => p.in === 'query')
+        .map(p => ({ name: p.name, required: !!p.required, type: p.schema?.type || 'string' }));
+
+      let bodyFields = null;
+      const reqBody = op.requestBody;
+      if (reqBody?.content?.['application/json']?.schema) {
+        bodyFields = resolveSchema(reqBody.content['application/json'].schema, spec);
+      }
+
+      const auth = Array.isArray(op.security)
+        ? op.security.length > 0
+        : !!(spec.security && spec.security.length > 0);
+
+      routes.push({
+        tag,
+        method: method.toUpperCase(),
+        path,
+        description: op.summary || op.operationId || '',
+        pathParams,
+        queryParams,
+        bodyFields,
+        auth,
+      });
+    });
+  });
+
+  return routes;
+}
+
+function resolveSchema(schemaOrRef, spec) {
+  if (!schemaOrRef) return [];
+
+  let schema = schemaOrRef;
+  if (schema.$ref) {
+    const parts = schema.$ref.replace(/^#\//, '').split('/');
+    schema = parts.reduce((o, k) => o?.[k], spec);
+    if (!schema) return [];
+  }
+
+  if (schema.allOf) {
+    const merged = {};
+    schema.allOf.forEach(s => {
+      const fields = resolveSchema(s, spec);
+      fields.forEach(f => { merged[f.name] = f; });
+    });
+    return Object.values(merged);
+  }
+
+  if (!schema.properties) return [];
+
+  const required = schema.required || [];
+  return Object.entries(schema.properties).map(([name, propRaw]) => {
+    let prop = propRaw;
+    if (prop.$ref) {
+      const parts = prop.$ref.replace(/^#\//, '').split('/');
+      prop = parts.reduce((o, k) => o?.[k], spec) || propRaw;
+    }
+    return {
+      name,
+      required: required.includes(name),
+      type: prop.type || (prop.allOf ? 'object' : prop.anyOf ? 'any' : 'any'),
+      enum: prop.enum || null,
+      default: prop.default !== undefined ? prop.default : null,
+      example: prop.example !== undefined ? prop.example : null,
+      description: prop.description || null,
+    };
+  });
+}
+
+// ── SIDEBAR
+function buildSidebar(routes, base) {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.innerHTML = '';
+
+  if (!routes.length) {
+    sidebar.innerHTML = '<div style="padding:16px;font-size:11px;color:#555;">No routes found.</div>';
+    return;
+  }
+
+  const groups = {};
+  routes.forEach(r => { if (!groups[r.tag]) groups[r.tag] = []; groups[r.tag].push(r); });
+
+  Object.entries(groups).forEach(([tag, tagRoutes]) => {
+    const group = document.createElement('div');
+    group.className = 'tag-group';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'tag-header';
+    hdr.textContent = tag;
+    group.appendChild(hdr);
+
+    tagRoutes.forEach(route => {
+      const btn = document.createElement('button');
+      btn.className = 'route-btn';
+
+      const badge = document.createElement('span');
+      badge.className = `method-badge ${route.method}`;
+      badge.textContent = route.method;
+
+      const pathEl = document.createElement('span');
+      pathEl.className = 'route-path';
+      pathEl.textContent = route.path;
+      pathEl.title = route.description || route.path;
+
+      btn.append(badge, pathEl);
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.route-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentRoute = route;
+        renderMain(route, base);
+      });
+      group.appendChild(btn);
+    });
+
+    sidebar.appendChild(group);
+  });
+}
+
+function resetMain() {
+  document.getElementById('main').innerHTML = `
+    <div class="empty-state">
+      <div class="empty-state-title">← pick a route</div>
+      <div class="empty-state-sub">fill fields and generate your curl</div>
+    </div>`;
+}
+
+// ── MAIN PANEL
+function renderMain(route, baseOverride) {
+  const base = baseOverride || document.getElementById('baseUrlInput').value.trim().replace(/\/$/, '');
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+
+  const hdr = document.createElement('div');
+  hdr.className = 'main-header';
+  const badge = document.createElement('span');
+  badge.className = `method-badge ${route.method}`;
+  badge.style.cssText = 'font-size:13px;padding:4px 10px;';
+  badge.textContent = route.method;
+  const pathEl = document.createElement('span');
+  pathEl.className = 'main-path';
+  pathEl.textContent = route.path;
+  const desc = document.createElement('span');
+  desc.className = 'main-desc';
+  desc.textContent = route.description;
+  hdr.append(badge, pathEl, desc);
+  main.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.className = 'main-body';
+
+  if (route.auth && !token) {
+    const warn = document.createElement('div');
+    warn.className = 'token-warn visible';
+    warn.textContent = '⚠ This route requires auth. Paste your token in the top bar.';
+    body.appendChild(warn);
+  }
+
+  if (route.pathParams?.length) {
+    const sec = makeSection('Path Params');
+    const grid = document.createElement('div');
+    grid.className = 'field-grid';
+    route.pathParams.forEach(p => grid.appendChild(makeField(`path__${p.name}`, p.name, '', p.required, p.type, null)));
+    sec.appendChild(grid);
+    body.appendChild(sec);
+  }
+
+  if (route.queryParams?.length) {
+    const sec = makeSection('Query Params');
+    const grid = document.createElement('div');
+    grid.className = 'field-grid';
+    route.queryParams.forEach(p => grid.appendChild(makeField(`query__${p.name}`, p.name, '', p.required, p.type, null)));
+    sec.appendChild(grid);
+    body.appendChild(sec);
+  }
+
+  if (route.bodyFields?.length) {
+    const sec = makeSection('Request Body');
+    const note = document.createElement('div');
+    note.className = 'schema-note';
+    note.textContent = 'read from your openapi schema • empty optional fields omitted';
+    sec.appendChild(note);
+    route.bodyFields.forEach(f => {
+      const val = f.example !== null ? f.example : (f.default !== null ? f.default : '');
+      sec.appendChild(makeField(`body__${f.name}`, f.name, val, f.required, f.type, f.enum));
+    });
+    body.appendChild(sec);
+  }
+
+  const genBtn = document.createElement('button');
+  genBtn.className = 'generate-btn';
+  genBtn.textContent = 'GENERATE CURL';
+  genBtn.addEventListener('click', () => generateCurl(route, base));
+  body.appendChild(genBtn);
+
+  body.appendChild(makeSection('Output'));
+  const output = document.createElement('pre');
+  output.className = 'output-block';
+  output.id = 'curlOutput';
+  output.textContent = '// click generate';
+  body.appendChild(output);
+
+  main.appendChild(body);
+}
+
+function makeSection(label) {
+  const el = document.createElement('div');
+  const lbl = document.createElement('div');
+  lbl.className = 'section-label';
+  lbl.textContent = label;
+  el.appendChild(lbl);
+  return el;
+}
+
+function makeField(id, label, defaultVal, required, type, enumVals) {
+  const row = document.createElement('div');
+  row.className = 'field-row';
+
+  const lbl = document.createElement('div');
+  lbl.className = 'field-label';
+  lbl.innerHTML = label + (required ? '<span class="field-required">*</span>' : '');
+  row.appendChild(lbl);
+
+  if (enumVals?.length) {
+    const sel = document.createElement('select');
+    sel.className = 'field-input';
+    sel.id = id;
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = required ? '-- select --' : '(optional)';
+    sel.appendChild(blank);
+    enumVals.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      if (v === defaultVal) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    row.appendChild(sel);
+  } else {
+    const input = document.createElement('input');
+    input.className = 'field-input';
+    input.id = id;
+    if (defaultVal !== null && defaultVal !== '') {
+      input.value = typeof defaultVal === 'object' ? JSON.stringify(defaultVal) : String(defaultVal);
+    }
+    input.placeholder = required ? `${type} (required)` : `${type} (optional)`;
+    row.appendChild(input);
+  }
+
+  if (type && type !== 'string') {
+    const hint = document.createElement('div');
+    hint.className = 'field-hint';
+    hint.textContent = type;
+    row.appendChild(hint);
+  }
+
+  return row;
+}
+
+function generateCurl(route, base) {
+  let resolvedPath = route.path;
+
+  (route.pathParams || []).forEach(p => {
+    const val = document.getElementById(`path__${p.name}`)?.value.trim();
+    if (val) resolvedPath = resolvedPath.replace(`{${p.name}}`, val);
+  });
+
+  const queryParts = [];
+  (route.queryParams || []).forEach(p => {
+    const val = document.getElementById(`query__${p.name}`)?.value.trim();
+    if (val) queryParts.push(`${p.name}=${encodeURIComponent(val)}`);
+  });
+
+  let url = `${base}${resolvedPath}`;
+  if (queryParts.length) url += '?' + queryParts.join('&');
+
+  let bodyObj = null;
+  if (route.bodyFields?.length) {
+    bodyObj = {};
+    route.bodyFields.forEach(f => {
+      const el = document.getElementById(`body__${f.name}`);
+      if (!el) return;
+      const val = el.value.trim();
+      if (val === '' || val === 'null') return;
+      if ((val.startsWith('[') || val.startsWith('{'))) { try { bodyObj[f.name] = JSON.parse(val); return; } catch(e){} }
+      if (val === 'true')  { bodyObj[f.name] = true;  return; }
+      if (val === 'false') { bodyObj[f.name] = false; return; }
+      if (!isNaN(val) && val !== '') { bodyObj[f.name] = Number(val); return; }
+      bodyObj[f.name] = val;
+    });
+    if (!Object.keys(bodyObj).length) bodyObj = null;
+  }
+
+  const lines = [`curl -X ${route.method} \\`, `  '${url}' \\`];
+  if (route.auth) lines.push(`  -H 'Authorization: Bearer ${token || '<TOKEN>'}' \\`);
+  if (bodyObj) {
+    lines.push(`  -H 'Content-Type: application/json' \\`);
+    lines.push(`  -d '${JSON.stringify(bodyObj, null, 2)}'`);
+  } else {
+    lines[lines.length - 1] = lines[lines.length - 1].replace(/ \\$/, '');
+  }
+
+  const curlStr = lines.join('\n');
+  const output = document.getElementById('curlOutput');
+  output.textContent = curlStr;
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.textContent = 'COPY';
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(curlStr);
+    copyBtn.textContent = 'COPIED ✓';
+    copyBtn.classList.add('copied');
+    setTimeout(() => { copyBtn.textContent = 'COPY'; copyBtn.classList.remove('copied'); }, 1500);
+  });
+  output.appendChild(copyBtn);
+}
+
+// Auto-load routes when page opens
+loadSpec();
+</script>
+</body>
+</html>

@@ -1,0 +1,4710 @@
+🚀 PROJECT BUNDLE FOR REVIEW
+==================================================
+
+--- BATCH 1 | src/app/main.py ---
+STATAUS: ✅ OPTIMAL SIZE (123 lines)
+### FILE: src/app/main.py
+```python
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import FileResponse, JSONResponse
+
+# Internal Imports
+from app.core.config import get_settings
+from app.api.routes import (
+    auth, users, members, reservations, reservation_attendees,
+    menu_items, orders, order_items, messages, dining_rooms,
+    tables, seat_assignments, admin, schema, health
+)
+
+# ── 0. PATH CONFIGURATION ──
+APP_DIR = Path(__file__).resolve().parent
+BASE_DIR = APP_DIR.parent.parent           # project root
+TOOLS_DIR = APP_DIR / "tools" / "html"
+
+settings = get_settings()
+
+# ── 1. LIFESPAN ──
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    audit_api_routes(app)           # run audit at startup
+    yield
+    # shutdown logic can go here later (db pools, etc.)
+
+app = FastAPI(lifespan=lifespan)
+
+# ── 2. CORS ──
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # TEMPORARY: Set to "*" to see if the 500 persists without CORS noise
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── 3. STATIC UTILS ──
+@app.get("/curl-gen", include_in_schema=False)
+async def curl_gen_page():
+    path = TOOLS_DIR / "curl-gen.html"
+    if not path.exists():
+        return JSONResponse(
+            {"error": f"Utility file missing at {path}"},
+            status_code=404
+        )
+    return FileResponse(path)
+
+# ── 4. ROUTER SYSTEM ──
+API_PREFIX = "/api"
+
+# Public / System
+app.include_router(health.router,    prefix=API_PREFIX, tags=["Health"])
+app.include_router(auth.router,      prefix=API_PREFIX, tags=["Auth"])
+app.include_router(schema.router,    prefix=API_PREFIX, tags=["System"])
+
+# Core
+app.include_router(users.router,     prefix=API_PREFIX, tags=["Users"])
+app.include_router(members.router,   prefix=API_PREFIX, tags=["Members"])
+
+# Logistics
+for router_mod in [reservations, reservation_attendees, menu_items,
+                   dining_rooms, tables, seat_assignments]:
+    app.include_router(router_mod.router, prefix=API_PREFIX, tags=["Logistics"])
+
+# Business
+app.include_router(orders.router,       prefix=API_PREFIX, tags=["Orders"])
+app.include_router(order_items.router,  prefix=API_PREFIX, tags=["Orders"])
+app.include_router(messages.router,     prefix=API_PREFIX, tags=["Messages"])
+app.include_router(admin.router,        prefix=API_PREFIX, tags=["Admin"])
+
+# ── 5. CUSTOM OPENAPI + SELECTIVE SECURITY ──
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title="AAA Backend API",
+        version="1.0.0",
+        description="API for AAA Backend Management System",
+        routes=app.routes,
+    )
+
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token"
+        }
+    }
+
+    public_paths = {
+        f"{API_PREFIX}/auth/login",
+        f"{API_PREFIX}/auth/refresh",   # ← add if you have refresh endpoint
+        f"{API_PREFIX}/health",
+        f"{API_PREFIX}/health/",
+    }
+
+    for path, path_item in openapi_schema["paths"].items():
+        if path in public_paths:
+            continue
+        for method in path_item.values():
+            method.setdefault("security", []).append({"BearerAuth": []})
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+# ── 6. ROUTE AUDIT ──
+def audit_api_routes(app_obj):
+    print("\n🔍 ROUTE AUDIT: Checking for trailing slash inconsistencies...")
+    api_paths = sorted(p for p in (r.path for r in app_obj.routes) if p and p.startswith(API_PREFIX))
+    for p in api_paths:
+        status = "✅ SLASH" if p.endswith("/") else "⚪ NAKED"
+        print(f"   {status} → {p}")
+
+
+```
+
+==================================================
+
+--- BATCH 2 | src/app/database.py ---
+STATAUS: ✅ OPTIMAL SIZE (56 lines)
+### FILE: src/app/database.py
+```python
+from __future__ import annotations
+
+from typing import Generator
+
+from sqlalchemy import MetaData, create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from app.core.config import get_settings
+
+settings = get_settings()
+
+
+# ── 1. Naming Conventions for clean, readable migrations ──
+POSTGRES_NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
+class Base(DeclarativeBase):
+    metadata = MetaData(naming_convention=POSTGRES_NAMING_CONVENTION)
+
+
+# ── 2. Engine with production-friendly pooling ──
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,         # detect & recover broken connections
+    pool_size=10,               # persistent connections
+    max_overflow=20,            # allow bursts (e.g. dinner rush)
+    pool_timeout=30,            # wait time before raising error
+    pool_recycle=1800,          # recycle after ~30 min to avoid stale connections
+    echo=settings.ENV == "dev", # show SQL in development only
+)
+
+
+# ── 3. Session factory ──
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,     # better performance & prevents detached instance issues
+)
+
+
+# ── 4. Dependency (use this in FastAPI routes) ──
+def get_db() -> Generator[Session, None, None]:
+    """
+    FastAPI dependency: yields a DB session and ensures it's closed afterward.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+==================================================
+
+--- BATCH 3 | src/app/core/config.py ---
+STATAUS: ✅ OPTIMAL SIZE (72 lines)
+### FILE: src/app/core/config.py
+```python
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import List
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_ignore_empty=True,
+        extra="ignore",
+    )
+
+    # ── ENVIRONMENT ──
+    ENV: str = Field(
+        default="dev",
+        pattern=r"^(dev|prod|test)$",
+        description="Environment: dev, prod or test"
+    )
+    PORT: int = Field(default=8080, ge=1, le=65535)
+
+    # ── CORS ──
+    ALLOWED_ORIGINS: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        description="Comma-separated list of allowed origins"
+    )
+
+    # ── DATABASE ──
+    DATABASE_URL: str = Field(
+        default="postgresql+psycopg://postgres:postgres@localhost:5432/aaa",
+        description="PostgreSQL connection string"
+    )
+
+    # ── JWT ──
+    JWT_SECRET_KEY: str = Field(
+        default="change-me-in-production-very-important",
+        description="Must be strong & unique in production"
+    )
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    def origins_list(self) -> List[str]:
+        """Convert comma-separated origins string → cleaned list."""
+        if not self.ALLOWED_ORIGINS:
+            return []
+        return [
+            origin.strip()
+            for origin in self.ALLOWED_ORIGINS.split(",")
+            if origin.strip() and origin.strip().lower() != "null"
+        ]
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def secret_must_be_strong(cls, v: str, info) -> str:
+        if info.data.get("ENV") == "prod" and v in {
+            "change-me-in-production-very-important",
+            "dev-secret",
+            "secret",
+            ""
+        }:
+            raise ValueError(
+                "JWT_SECRET_KEY must be a strong, unique value in production "
+                "(not 'dev-secret', 'secret', or the default placeholder)"
+            )
+        return v
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+```
+
+==================================================
+
+--- BATCH 4 | src/app/models/dining_room.py ---
+STATAUS: ✅ OPTIMAL SIZE (33 lines)
+### FILE: src/app/models/dining_room.py
+```python
+# app/models/dining_room.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
+
+from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.table import Table
+
+
+class DiningRoom(Base):
+    __tablename__ = "dining_rooms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    tables: Mapped[list["Table"]] = relationship(
+        "Table",
+        back_populates="dining_room",
+        cascade="all, delete-orphan",
+    )
+```
+
+==================================================
+
+--- BATCH 5 | src/app/models/member.py ---
+STATAUS: ✅ OPTIMAL SIZE (79 lines)
+### FILE: src/app/models/member.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import String, ForeignKey, DateTime, text
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.reservation_attendee import ReservationAttendee
+
+DIETARY_RESTRICTIONS = [
+    "dairy_free", "egg_free", "fish_allergy", "gluten_free",
+    "halal", "kosher", "nut_allergy", "peanut_allergy",
+    "sesame_allergy", "shellfish_allergy", "soy_free",
+    "vegan", "vegetarian",
+]
+
+dietary_enum = ENUM(
+    *DIETARY_RESTRICTIONS,
+    name="dietary_restriction_enum",
+    create_type=False,
+)
+
+class Member(Base):
+    __tablename__ = "members"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+
+    relation: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+        server_default="Primary",
+    )
+
+    dietary_restrictions: Mapped[List[str]] = mapped_column(
+        ARRAY(dietary_enum),
+        nullable=False,
+        server_default=text("'{}'::dietary_restriction_enum[]"),
+    )
+
+    # --- Timestamps Fixed & Nested ---
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"), 
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # --- Relationships ---
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="members",
+    )
+
+    reservation_attendees: Mapped[List["ReservationAttendee"]] = relationship(
+        "ReservationAttendee",
+        back_populates="member",
+    )
+
+    def __repr__(self) -> str:
+        return f"<Member(id={self.id}, name={self.name!r}, relation={self.relation!r})>"
+```
+
+==================================================
+
+--- BATCH 6 | src/app/models/menu_item.py ---
+STATAUS: ✅ OPTIMAL SIZE (53 lines)
+### FILE: src/app/models/menu_item.py
+```python
+# app/models/menu_item.py
+from __future__ import annotations
+
+from typing import Any, List, Optional, TYPE_CHECKING
+
+from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.order_item import OrderItem
+
+
+class MenuItem(Base):
+    """
+    Admin-controlled menu option.
+
+    History-preserving rules:
+    - Rows should not be deleted (use is_active=False instead).
+    - Inactive items remain queryable for historical order item references.
+    """
+    __tablename__ = "menu_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    name: Mapped[str] = mapped_column(String(140), nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    dietary_restrictions: Mapped[List[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true", index=True
+    )
+
+    created_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    order_items: Mapped[List["OrderItem"]] = relationship(
+        "OrderItem",
+        back_populates="menu_item",
+    )
+```
+
+==================================================
+
+--- BATCH 7 | src/app/models/message.py ---
+STATAUS: ✅ OPTIMAL SIZE (50 lines)
+### FILE: src/app/models/message.py
+```python
+# app/models/message.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from sqlalchemy import ForeignKey, DateTime, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.reservation import Reservation
+    from app.models.user import User
+
+
+class Message(Base):
+    """
+    A message attached to a reservation.
+    Used for organizer <-> staff communication.
+    """
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("reservations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    sender_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    # relationships
+    reservation: Mapped["Reservation"] = relationship(
+        back_populates="messages"
+    )
+
+    sender: Mapped["User"] = relationship()
+```
+
+==================================================
+
+--- BATCH 8 | src/app/models/order.py ---
+STATAUS: ✅ OPTIMAL SIZE (67 lines)
+### FILE: src/app/models/order.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import DateTime, ForeignKey, String, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.reservation_attendee import ReservationAttendee
+    from app.models.order_item import OrderItem
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    attendee_id: Mapped[int] = mapped_column(
+        ForeignKey("reservation_attendees.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default="open",
+        default="open",
+        index=True,
+    )
+
+    notes: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    attendee: Mapped["ReservationAttendee"] = relationship(
+        "ReservationAttendee",
+        back_populates="order",
+        uselist=False,
+    )
+
+    items: Mapped[List["OrderItem"]] = relationship(
+        "OrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<Order(id={self.id}, attendee_id={self.attendee_id}, status={self.status!r})>"
+```
+
+==================================================
+
+--- BATCH 9 | src/app/models/order_item.py ---
+STATAUS: ✅ OPTIMAL SIZE (91 lines)
+### FILE: src/app/models/order_item.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional, Dict, Any
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, JSON, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.order import Order
+    from app.models.menu_item import MenuItem
+
+
+class OrderItem(Base):
+    """
+    One line item in an attendee's Order.
+    Snapshots are mandatory to preserve price/name at order time (audit/fiscal integrity).
+    """
+    __tablename__ = "order_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    order_id: Mapped[int] = mapped_column(
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    menu_item_id: Mapped[int] = mapped_column(
+        ForeignKey("menu_items.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    quantity: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+
+    # "selected" → "ordered" → "served" → "canceled" (or similar flow)
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default="selected",
+        default="selected",
+        index=True,
+    )
+
+    # REQUIRED snapshots – protect against menu changes after order
+    name_snapshot: Mapped[str] = mapped_column(
+        String(140),
+        nullable=False,
+    )
+
+    price_cents_snapshot: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    # Optional: special requests, customizations, allergies notes, etc.
+    meta: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    order: Mapped["Order"] = relationship(
+        "Order",
+        back_populates="items",
+    )
+
+    menu_item: Mapped["MenuItem"] = relationship(
+        "MenuItem",
+        back_populates="order_items",
+    )
+```
+
+==================================================
+
+--- BATCH 10 | src/app/models/reservation.py ---
+STATAUS: ✅ OPTIMAL SIZE (134 lines)
+### FILE: src/app/models/reservation.py
+```python
+# app/models/reservation.py
+from __future__ import annotations
+
+from datetime import datetime, date, time, timezone
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import DateTime, ForeignKey, String, Date, Time, event
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.reservation_attendee import ReservationAttendee
+    from app.models.message import Message
+    from app.models.seat_assignment import SeatAssignment
+    from app.models.dining_room import DiningRoom
+
+
+def _fmt_date(d: date | None) -> str:
+    return d.strftime("%Y%m%d") if d else "00000000"
+
+
+def _fmt_time(t: time | None) -> str:
+    # "HHMM" 24-hour
+    return t.strftime("%H%M") if t else "0000"
+
+
+def _fmt_int(val: int | None, width: int) -> str:
+    if val is None:
+        return "0" * width
+    return str(val).zfill(width)
+
+
+def _make_reservation_code(res: "Reservation") -> str:
+    # Example: ABY-20260224-1830-DR03-U0007-R0026
+    # Keep this deterministic and derived from real fields.
+    lodge = "ABY"
+    d = _fmt_date(getattr(res, "date", None))
+    st = _fmt_time(getattr(res, "start_time", None))
+    dr = f"DR{_fmt_int(getattr(res, 'dining_room_id', None), 2)}"
+    u = f"U{_fmt_int(getattr(res, 'user_id', None), 4)}"
+    rid = f"R{_fmt_int(getattr(res, 'id', None), 4)}"
+    return f"{lodge}-{d}-{st}-{dr}-{u}-{rid}"
+
+
+class Reservation(Base):
+    __tablename__ = "reservations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Room preference chosen by member at booking time
+    dining_room_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("dining_rooms.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    start_time: Mapped[time] = mapped_column(Time, nullable=False)
+    end_time: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="draft",
+        server_default="draft",
+        index=True,
+    )
+
+    notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # NEW: derived “coded data” string (stored)
+    # Note: migration will add this as nullable first, then backfill, then set NOT NULL + unique if desired.
+    reservation_code: Mapped[Optional[str]] = mapped_column(
+        String(80),
+        nullable=True,
+        index=True,
+        unique=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user: Mapped["User"] = relationship("User")
+    dining_room: Mapped[Optional["DiningRoom"]] = relationship("DiningRoom")
+
+    attendees: Mapped[List["ReservationAttendee"]] = relationship(
+        "ReservationAttendee",
+        back_populates="reservation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    messages: Mapped[list["Message"]] = relationship(
+        "Message",
+        back_populates="reservation",
+        cascade="all, delete-orphan",
+    )
+
+    seat_assignment: Mapped[Optional["SeatAssignment"]] = relationship(
+        "SeatAssignment",
+        back_populates="reservation",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+@event.listens_for(Reservation, "before_insert")
+def _reservation_before_insert(mapper, connection, target: Reservation) -> None:
+    # id may not exist yet; we’ll finalize after insert in the next step (migration/backfill).
+    # Still set a provisional code so it’s never blank in memory.
+    if not target.reservation_code:
+        target.reservation_code = _make_reservation_code(target)
+
+
+@event.listens_for(Reservation, "before_update")
+def _reservation_before_update(mapper, connection, target: Reservation) -> None:
+    # Keep it aligned with edited fields
+    target.reservation_code = _make_reservation_code(target)
+```
+
+==================================================
+
+--- BATCH 11 | src/app/models/reservation_attendee.py ---
+STATAUS: ✅ OPTIMAL SIZE (104 lines)
+### FILE: src/app/models/reservation_attendee.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List, Optional, Dict, Any
+
+from sqlalchemy import ForeignKey, String, DateTime, JSON, Boolean, text
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.reservation import Reservation
+    from app.models.member import Member
+    from app.models.order import Order
+
+
+DIETARY_RESTRICTIONS = [
+    "dairy_free", "egg_free", "fish_allergy", "gluten_free",
+    "halal", "kosher", "nut_allergy", "peanut_allergy",
+    "sesame_allergy", "shellfish_allergy", "soy_free",
+    "vegan", "vegetarian",
+]
+
+dietary_enum = ENUM(
+    *DIETARY_RESTRICTIONS,
+    name="dietary_restriction_enum",
+    create_type=True,  # Alembic creates enum if missing
+)
+
+
+class ReservationAttendee(Base):
+    __tablename__ = "reservation_attendees"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("reservations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    member_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("members.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    guest_name: Mapped[Optional[str]] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    dietary_restrictions: Mapped[List[str]] = mapped_column(
+        ARRAY(dietary_enum),
+        nullable=False,
+        server_default=text("'{}'::dietary_restriction_enum[]"),
+    )
+
+    meta: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+    )
+
+    selection_confirmed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default="false",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("TIMEZONE('utc', now())"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    reservation: Mapped["Reservation"] = relationship(
+        "Reservation",
+        back_populates="attendees",
+    )
+
+    member: Mapped[Optional["Member"]] = relationship(
+        "Member",
+        back_populates="reservation_attendees",  # add this relationship on Member side if needed
+    )
+
+    order: Mapped[Optional["Order"]] = relationship(
+        "Order",
+        back_populates="attendee",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        name = self.guest_name or f"Member {self.member_id}"
+        return f"<ReservationAttendee(id={self.id}, name={name!r}, confirmed={self.selection_confirmed})>"
+```
+
+==================================================
+
+--- BATCH 12 | src/app/models/revoked_token.py ---
+STATAUS: ✅ OPTIMAL SIZE (26 lines)
+### FILE: src/app/models/revoked_token.py
+```python
+# app/models/revoked_token.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, String, Index
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.database import Base
+
+
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+    __table_args__ = (
+        Index("ix_revoked_tokens_jti", "jti", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # JWT ID (unique per token)
+    jti: Mapped[str] = mapped_column(String(36), nullable=False)
+
+    revoked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+```
+
+==================================================
+
+--- BATCH 13 | src/app/models/seat_assignment.py ---
+STATAUS: ✅ OPTIMAL SIZE (58 lines)
+### FILE: src/app/models/seat_assignment.py
+```python
+# app/models/seat_assignment.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional, TYPE_CHECKING
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.reservation import Reservation
+    from app.models.table import Table
+    from app.models.user import User
+
+
+class SeatAssignment(Base):
+    __tablename__ = "seat_assignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("reservations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    table_id: Mapped[int] = mapped_column(
+        ForeignKey("tables.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # Denormalized reservation window for overlap enforcement
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    assigned_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    reservation: Mapped["Reservation"] = relationship(
+        "Reservation", back_populates="seat_assignment"
+    )
+    table: Mapped["Table"] = relationship(
+        "Table", back_populates="seat_assignments"
+    )
+    assigned_by: Mapped[Optional["User"]] = relationship("User")
+```
+
+==================================================
+
+--- BATCH 14 | src/app/models/table.py ---
+STATAUS: ✅ OPTIMAL SIZE (48 lines)
+### FILE: src/app/models/table.py
+```python
+# app/models/table.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Integer, Boolean, DateTime, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.dining_room import DiningRoom
+    from app.models.seat_assignment import SeatAssignment
+
+class Table(Base):
+    __tablename__ = "tables"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    dining_room_id: Mapped[int] = mapped_column(
+        ForeignKey("dining_rooms.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    # how many people can sit at this table
+    seat_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    dining_room: Mapped["DiningRoom"] = relationship(
+        "DiningRoom",
+        back_populates="tables",
+    )
+
+    seat_assignments: Mapped[list["SeatAssignment"]] = relationship(
+        "SeatAssignment",
+        back_populates="table",
+        cascade="all, delete-orphan",
+    )   
+```
+
+==================================================
+
+--- BATCH 15 | src/app/models/user.py ---
+STATAUS: ✅ OPTIMAL SIZE (71 lines)
+### FILE: src/app/models/user.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
+
+from sqlalchemy import Boolean, DateTime, JSON, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.member import Member
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # Email – always lowercase, indexed for fast lookup
+    email: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    # Password – never store plaintext; no server default (safety)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Account status – soft delete / deactivation support
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+    )
+
+    # Role for RBAC; index speeds up permission checks
+    role: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="member",
+        server_default="member",
+        index=True,
+    )
+
+    # Future-proof: granular per-user permission overrides
+    # Example: {"reservations:write": true, "menu:delete": false}
+    permissions: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+    )
+
+    # Audit trail
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationship – one User can have multiple Member profiles if needed
+    members: Mapped[List["Member"]] = relationship(
+        "Member",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(email={self.email!r}, role={self.role}, active={self.is_active})>"
+```
+
+==================================================
+
+--- BATCH 16 | src/app/schemas/dining_room.py ---
+STATAUS: ✅ OPTIMAL SIZE (22 lines)
+### FILE: src/app/schemas/dining_room.py
+```python
+# app/schemas/dining_room.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, ConfigDict
+
+
+class DiningRoomBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    is_active: bool = True
+
+
+class DiningRoomCreate(DiningRoomBase):
+    pass
+
+
+class DiningRoomRead(DiningRoomBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+```
+
+==================================================
+
+--- BATCH 17 | src/app/schemas/member.py ---
+STATAUS: ✅ OPTIMAL SIZE (31 lines)
+### FILE: src/app/schemas/member.py
+```python
+# app/schemas/member.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, ConfigDict
+
+
+class MemberBase(BaseModel):
+    name: str = Field(..., max_length=120)
+    relation: Optional[str] = Field(None, max_length=50)
+    dietary_restrictions: Optional[List[str]] = None
+
+
+class MemberCreate(MemberBase):
+    pass
+
+
+class MemberUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=120)
+    relation: Optional[str] = Field(None, max_length=50)
+    dietary_restrictions: Optional[List[str]] = None
+
+
+class MemberRead(MemberBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: datetime
+```
+
+==================================================
+
+--- BATCH 18 | src/app/schemas/menu_item.py ---
+STATAUS: ✅ OPTIMAL SIZE (40 lines)
+### FILE: src/app/schemas/menu_item.py
+```python
+# app/schemas/menu_item.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MenuItemBase(BaseModel):
+    name: str = Field(..., max_length=140)
+    description: Optional[str] = Field(None, max_length=500)
+    price_cents: int = Field(..., ge=0)
+    dietary_restrictions: List[str] = Field(default_factory=list)
+    is_active: bool = True
+
+
+class MenuItemCreate(MenuItemBase):
+    pass
+
+
+class MenuItemUpdate(BaseModel):
+    # All optional for PATCH-style update
+    name: Optional[str] = Field(None, max_length=140)
+    description: Optional[str] = Field(None, max_length=500)
+    price_cents: Optional[int] = Field(None, ge=0)
+    dietary_restrictions: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+
+class MenuItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: Optional[str] = None
+    price_cents: int
+    dietary_restrictions: List[str] = Field(default_factory=list)
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+```
+
+==================================================
+
+--- BATCH 19 | src/app/schemas/messages.py ---
+STATAUS: ✅ OPTIMAL SIZE (26 lines)
+### FILE: src/app/schemas/messages.py
+```python
+# app/schemas/messages.py
+from __future__ import annotations
+
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MessageSender(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+
+
+class MessageCreate(BaseModel):
+    reservation_id: int
+    body: str = Field(min_length=1)
+
+
+class MessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    reservation_id: int
+    body: str
+    created_at: datetime
+    sender: MessageSender
+```
+
+==================================================
+
+--- BATCH 20 | src/app/schemas/order_items.py ---
+STATAUS: ✅ OPTIMAL SIZE (34 lines)
+### FILE: src/app/schemas/order_items.py
+```python
+# app/schemas/order_items.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OrderItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    order_id: int
+    menu_item_id: int
+    quantity: int
+    status: str
+    name_snapshot: Optional[str] = None
+    price_cents_snapshot: Optional[int] = None
+    meta: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderItemCreateRequest(BaseModel):
+    menu_item_id: int = Field(..., ge=1)
+    quantity: int = Field(1, ge=1)
+    status: str = Field("selected", max_length=20)
+    meta: Optional[Dict[str, Any]] = None
+
+
+class OrderItemUpdateRequest(BaseModel):
+    quantity: Optional[int] = Field(None, ge=1)
+    status: Optional[str] = Field(None, max_length=20)
+    meta: Optional[Dict[str, Any]] = None
+```
+
+==================================================
+
+--- BATCH 21 | src/app/schemas/orders.py ---
+STATAUS: ✅ OPTIMAL SIZE (26 lines)
+### FILE: src/app/schemas/orders.py
+```python
+# app/schemas/orders.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OrderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    attendee_id: int
+    status: str
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OrderEnsureRequest(BaseModel):
+    attendee_id: int = Field(..., ge=1)
+
+
+class OrderUpdateRequest(BaseModel):
+    status: Optional[str] = Field(None, max_length=20)
+    notes: Optional[str] = Field(None, max_length=500)
+```
+
+==================================================
+
+--- BATCH 22 | src/app/schemas/reservation.py ---
+STATAUS: ✅ OPTIMAL SIZE (43 lines)
+### FILE: src/app/schemas/reservation.py
+```python
+# app/schemas/reservation.py
+from __future__ import annotations
+
+from datetime import date as dt_date
+from datetime import datetime
+from datetime import time as dt_time
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+ReservationStatus = Literal["draft", "confirmed", "cancelled"]
+
+
+class ReservationBase(BaseModel):
+    date: dt_date
+    start_time: dt_time
+    end_time: Optional[dt_time] = None
+    status: ReservationStatus = "draft"
+    notes: Optional[str] = Field(None, max_length=500)
+    dining_room_id: Optional[int] = None
+
+
+class ReservationCreate(ReservationBase):
+    pass
+
+
+class ReservationUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
+
+    date: Optional[dt_date] = None
+    start_time: Optional[dt_time] = None
+    end_time: Optional[dt_time] = None
+    status: Optional[ReservationStatus] = None
+    notes: Optional[str] = None
+    dining_room_id: Optional[int] = None
+
+
+class ReservationRead(ReservationBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    created_at: datetime
+    updated_at: datetime
+```
+
+==================================================
+
+--- BATCH 23 | src/app/schemas/reservation_attendee.py ---
+STATAUS: ✅ OPTIMAL SIZE (70 lines)
+### FILE: src/app/schemas/reservation_attendee.py
+```python
+# app/schemas/reservation_attendee.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from enum import Enum
+
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+
+
+class DietaryRestriction(str, Enum):
+    dairy_free = "dairy_free"
+    egg_free = "egg_free"
+    fish_allergy = "fish_allergy"
+    gluten_free = "gluten_free"
+    halal = "halal"
+    kosher = "kosher"
+    nut_allergy = "nut_allergy"
+    peanut_allergy = "peanut_allergy"
+    sesame_allergy = "sesame_allergy"
+    shellfish_allergy = "shellfish_allergy"
+    soy_free = "soy_free"
+    vegan = "vegan"
+    vegetarian = "vegetarian"
+
+
+class ReservationAttendeeBase(BaseModel):
+    member_id: Optional[int] = None
+    guest_name: Optional[str] = Field(None, max_length=120)
+    dietary_restrictions: Optional[List[DietaryRestriction]] = None
+    meta: Optional[Dict[str, Any]] = None
+    selection_confirmed: Optional[bool] = None
+
+
+class ReservationAttendeeCreate(ReservationAttendeeBase):
+    reservation_id: int
+
+    @model_validator(mode="after")
+    def require_identity(self):
+        guest = (self.guest_name or "").strip()
+        if self.member_id is None and guest == "":
+            raise ValueError("member_id or guest_name is required")
+        self.guest_name = guest or None
+        return self
+
+
+class ReservationAttendeeUpdate(BaseModel):
+    member_id: Optional[int] = None
+    guest_name: Optional[str] = Field(None, max_length=120)
+    dietary_restrictions: Optional[List[DietaryRestriction]] = None
+    meta: Optional[Dict[str, Any]] = None
+    selection_confirmed: Optional[bool] = None
+
+
+class MemberReadNested(BaseModel):
+    """Minimal member read for nesting inside attendee — avoids circular import with member schema."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    email: Optional[str] = None
+
+
+class ReservationAttendeeRead(ReservationAttendeeBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    reservation_id: int
+    created_at: datetime
+    updated_at: datetime
+    member: Optional[MemberReadNested] = None
+```
+
+==================================================
+
+--- BATCH 24 | src/app/schemas/reservation_bootstrap.py ---
+STATAUS: ✅ OPTIMAL SIZE (23 lines)
+### FILE: src/app/schemas/reservation_bootstrap.py
+```python
+# app/schemas/reservation_bootstrap.py
+from __future__ import annotations
+
+from typing import List, Dict
+from pydantic import BaseModel, ConfigDict
+
+from app.schemas.reservation import ReservationRead
+from app.schemas.reservation_attendee import ReservationAttendeeRead
+from app.schemas.orders import OrderResponse
+from app.schemas.order_items import OrderItemResponse
+from app.schemas.messages import MessageResponse
+
+
+class ReservationBootstrapResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    reservation: ReservationRead
+    party_size: int
+    attendees: List[ReservationAttendeeRead]
+    orders: List[OrderResponse]
+    order_items: List[OrderItemResponse]
+    order_totals: Dict[int, int]
+    reservation_total: int
+    messages: List[MessageResponse]
+```
+
+==================================================
+
+--- BATCH 25 | src/app/schemas/seat_assignment.py ---
+STATAUS: ✅ OPTIMAL SIZE (28 lines)
+### FILE: src/app/schemas/seat_assignment.py
+```python
+# app/schemas/seat_assignment.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
+
+
+class SeatAssignmentCreate(BaseModel):
+    reservation_id: int
+    table_id: int
+    notes: Optional[str] = None
+
+
+class SeatAssignmentUpdate(BaseModel):
+    table_id: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class SeatAssignmentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    reservation_id: int
+    table_id: int
+    assigned_by_user_id: Optional[int] = None
+    assigned_at: datetime
+    notes: Optional[str] = None
+```
+
+==================================================
+
+--- BATCH 26 | src/app/schemas/table.py ---
+STATAUS: ✅ OPTIMAL SIZE (30 lines)
+### FILE: src/app/schemas/table.py
+```python
+# app/schemas/table.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
+
+
+class TableBase(BaseModel):
+    name: str
+    dining_room_id: int
+    seat_count: int
+    is_active: Optional[bool] = True
+
+
+class TableCreate(TableBase):
+    pass
+
+
+class TableUpdate(BaseModel):
+    name: Optional[str] = None
+    seat_count: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class TableRead(TableBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+```
+
+==================================================
+
+--- BATCH 27 | src/app/schemas/user.py ---
+STATAUS: ✅ OPTIMAL SIZE (31 lines)
+### FILE: src/app/schemas/user.py
+```python
+# app/schemas/user.py
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    role: Optional[str] = "member"  # optional, defaults to member
+
+class UserSignup(BaseModel):
+    email: str
+    password: str
+    invite_code: Optional[str] = None 
+
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: EmailStr
+    role: str  # include role in API responses
+    created_at: datetime
+
+
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    password: Optional[str] = None
+    role: Optional[str] = None  # optional for updates
+
+
+```
+
+==================================================
+
+--- BATCH 28 | src/app/api/deps/auth.py ---
+STATAUS: ✅ OPTIMAL SIZE (118 lines)
+### FILE: src/app/api/deps/auth.py
+```python
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps.db import get_db
+from app.core.config import get_settings
+from app.models.revoked_token import RevokedToken
+from app.models.user import User
+
+settings = get_settings()
+
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__rounds=12,
+)
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/auth/login",
+    auto_error=False,
+)
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not hashed_password:
+        return False
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(
+    subject: str | int,
+    expires_minutes: Optional[int] = None,
+    extra_claims: Optional[dict[str, Any]] = None,
+    is_refresh: bool = False,  # Add this default value!
+) -> str:
+    if expires_minutes is None:
+        # Long expiry for refresh, short for access
+        expires_minutes = 60 * 24 * 7 if is_refresh else settings.ACCESS_TOKEN_EXPIRE_MINUTES
+
+    expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+
+    payload: dict[str, Any] = {
+        "sub": str(subject),
+        "exp": expire,
+        "jti": str(uuid.uuid4()),
+        "type": "refresh" if is_refresh else "access",
+        **(extra_claims or {}),
+    }
+
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if not token:
+        raise credentials_exception
+
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        user_id_str = payload.get("sub")
+        jti = payload.get("jti")
+
+        if not isinstance(user_id_str, str) or not isinstance(jti, str):
+            raise credentials_exception
+
+        user_id = int(user_id_str)
+    except (JWTError, ValueError):
+        raise credentials_exception
+
+    revoked = db.execute(
+        select(RevokedToken).where(RevokedToken.jti == jti)
+    ).scalar_one_or_none()
+
+    if revoked:
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise credentials_exception
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Inactive user account")
+
+    return user
+
+
+def get_current_user_optional(
+    db: Session = Depends(get_db),
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> Optional[User]:
+    try:
+        return get_current_user(db=db, token=token)
+    except HTTPException:
+        return None
+```
+
+==================================================
+
+--- BATCH 29 | src/app/api/deps/db.py ---
+STATAUS: ✅ OPTIMAL SIZE (12 lines)
+### FILE: src/app/api/deps/db.py
+```python
+# app/api/deps/db.py
+from collections.abc import Generator
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+==================================================
+
+--- BATCH 30 | src/app/api/deps/permissions.py ---
+STATAUS: ✅ OPTIMAL SIZE (72 lines)
+### FILE: src/app/api/deps/permissions.py
+```python
+from typing import Literal
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.user import User
+
+
+
+def require_user(user: User = Depends(get_current_user)) -> User:
+    """Ensure a logged-in user exists."""
+    return user
+
+
+def require_user_id_match(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Ensure the URL user_id matches the authenticated user."""
+    if user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this resource",
+        )
+    return current_user
+
+
+def require_permission(
+    entity: str,
+    action: Literal["read", "write", "delete"],
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> str:
+    """
+    Enforce role-based permissions for users.
+    Rules for 'users' entity:
+        - member: can read/write own email/password only
+        - staff: cannot access users
+        - admin: full CRUD
+    Returns: "all" | "own"
+    Raises 403 if forbidden
+    """
+
+    if entity not in ("users",):
+        raise NotImplementedError(f"Permission rules not defined for entity: {entity}")
+
+    # Admin has full access
+    if user.role == "admin":
+        return "all"
+
+    # Staff cannot access users
+    if user.role == "staff":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Staff cannot access users",
+        )
+
+    # Member: can only read/write own record
+    if user.role == "member":
+        if action in ["read", "write"]:
+            return "own"
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Members cannot delete users",
+            )
+
+    # Unknown role fallback
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied",
+    )
+```
+
+==================================================
+
+--- BATCH 31 | src/app/api/routes/admin.py ---
+STATAUS: ⚠️ LARGE FILE - PASTE WITH CARE (779 lines)
+### FILE: src/app/api/routes/admin.py
+```python
+# app/api/routes/admin.py
+from __future__ import annotations
+
+from datetime import date
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, selectinload
+
+from app.api.deps.auth import hash_password, get_current_user
+from app.api.deps.db import get_db
+from app.models.dining_room import DiningRoom
+from app.models.member import Member
+from app.models.menu_item import MenuItem
+from app.models.message import Message
+from app.models.order import Order
+from app.models.reservation import Reservation
+from app.models.reservation_attendee import ReservationAttendee
+from app.models.seat_assignment import SeatAssignment
+from app.models.table import Table
+from app.models.user import User
+from app.schemas.dining_room import DiningRoomCreate, DiningRoomRead
+from app.schemas.member import MemberCreate, MemberRead, MemberUpdate
+from app.schemas.menu_item import MenuItemCreate, MenuItemResponse, MenuItemUpdate
+from app.schemas.orders import OrderResponse
+from app.schemas.reservation import ReservationCreate, ReservationRead, ReservationUpdate
+from app.schemas.table import TableCreate, TableRead
+from app.schemas.user import UserCreate, UserRead, UserUpdate
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def require_admin(user: User = Depends(get_current_user)) -> User:
+    if user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return user
+
+# ══════════════════════════════════════════════
+# USERS
+# ══════════════════════════════════════════════
+
+@router.get("/users", response_model=List[UserRead])
+def admin_list_users(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return db.query(User).order_by(User.id.asc()).all()
+
+
+@router.get("/users/{user_id}", response_model=UserRead)
+def admin_get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+@router.post("/users", response_model=UserRead, status_code=201)
+def admin_create_user(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    existing = db.query(User).filter(User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role or "member",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.patch("/users/{user_id}", response_model=UserRead)
+def admin_update_user(
+    user_id: int,
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    data = payload.model_dump(exclude_unset=True)
+    if "password" in data:
+        data["password_hash"] = hash_password(data.pop("password"))
+    for k, v in data.items():
+        setattr(user, k, v)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/users/{user_id}", status_code=204)
+def admin_delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == admin.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    db.delete(user)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# MEMBERS
+# ══════════════════════════════════════════════
+
+@router.get("/members", response_model=List[MemberRead])
+def admin_list_members(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return db.query(Member).order_by(Member.id.asc()).all()
+
+
+@router.get("/members/{member_id}", response_model=MemberRead)
+def admin_get_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    member = db.get(Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    return member
+
+
+@router.post("/members", response_model=MemberRead, status_code=201)
+def admin_create_member(
+    payload: MemberCreate,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    member = Member(
+        user_id=user_id,
+        name=payload.name,
+        relation=payload.relation,
+        dietary_restrictions=payload.dietary_restrictions,
+    )
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+@router.patch("/members/{member_id}", response_model=MemberRead)
+def admin_update_member(
+    member_id: int,
+    payload: MemberUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    member = db.get(Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(member, k, v)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+@router.delete("/members/{member_id}", status_code=204)
+def admin_delete_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    member = db.get(Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    db.delete(member)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# RESERVATIONS
+# ══════════════════════════════════════════════
+
+@router.get("/reservations", response_model=List[ReservationRead])
+def admin_list_reservations(
+    status: Optional[str] = Query(None),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(Reservation)
+    if status:
+        q = q.filter(Reservation.status == status)
+    if from_date:
+        q = q.filter(Reservation.date >= from_date)
+    if to_date:
+        q = q.filter(Reservation.date <= to_date)
+    return q.order_by(Reservation.date.asc(), Reservation.start_time.asc()).all()
+
+
+@router.get("/reservations/{reservation_id}", response_model=ReservationRead)
+def admin_get_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    return reservation
+
+
+@router.post("/reservations", response_model=ReservationRead, status_code=201)
+def admin_create_reservation(
+    payload: ReservationCreate,
+    user_id: int = Query(...),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    reservation = Reservation(
+        user_id=user_id,
+        date=payload.date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        status=payload.status or "draft",
+        notes=payload.notes,
+        dining_room_id=payload.dining_room_id,
+    )
+    db.add(reservation)
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+@router.patch("/reservations/{reservation_id}", response_model=ReservationRead)
+def admin_update_reservation(
+    reservation_id: int,
+    payload: ReservationUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(reservation, k, v)
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+@router.delete("/reservations/{reservation_id}", status_code=204)
+def admin_delete_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    db.delete(reservation)
+    db.commit()
+    return None
+
+
+@router.get("/reservations/{reservation_id}/bootstrap")
+def admin_reservation_bootstrap(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from app.models.order import Order
+    from sqlalchemy.orm import selectinload
+
+    reservation = (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.order)
+            .selectinload(Order.items),
+            selectinload(Reservation.messages),
+        )
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    attendees = reservation.attendees
+    orders = [a.order for a in attendees if a.order]
+    order_items = [item for o in orders for item in o.items]
+    order_totals = {}
+    reservation_total = 0
+    for order in orders:
+        total = sum(
+            i.price_cents_snapshot * i.quantity
+            for i in order.items
+            if i.status == "selected" and i.price_cents_snapshot and i.quantity
+        )
+        order_totals[order.id] = total
+        reservation_total += total
+
+    return {
+        "reservation": reservation,
+        "party_size": len(attendees),
+        "attendees": attendees,
+        "orders": orders,
+        "order_items": order_items,
+        "order_totals": order_totals,
+        "reservation_total": reservation_total,
+        "messages": reservation.messages,
+    }
+
+
+# ══════════════════════════════════════════════
+# ATTENDEES (admin full list + CRUD)
+# ══════════════════════════════════════════════
+
+@router.get("/attendees")
+def admin_list_attendees(
+    reservation_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(ReservationAttendee)
+    if reservation_id:
+        q = q.filter(ReservationAttendee.reservation_id == reservation_id)
+    return q.order_by(ReservationAttendee.id.asc()).all()
+
+
+@router.patch("/attendees/{attendee_id}")
+def admin_update_attendee(
+    attendee_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    for k, v in payload.items():
+        if hasattr(attendee, k):
+            setattr(attendee, k, v)
+    db.commit()
+    db.refresh(attendee)
+    return attendee
+
+
+@router.delete("/attendees/{attendee_id}", status_code=204)
+def admin_delete_attendee(
+    attendee_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    db.delete(attendee)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# ORDERS
+# ══════════════════════════════════════════════
+
+@router.patch("/orders/{order_id}")
+def admin_patch_order(
+    order_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if "status" in payload:
+        order.status = payload["status"]
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+# ══════════════════════════════════════════════
+# MENU ITEMS
+# ══════════════════════════════════════════════
+
+@router.get("/menu-items", response_model=List[MenuItemResponse])
+def admin_list_menu_items(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return db.query(MenuItem).order_by(MenuItem.id.asc()).all()
+
+
+@router.post("/menu-items", response_model=MenuItemResponse, status_code=201)
+def admin_create_menu_item(
+    payload: MenuItemCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    item = MenuItem(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/menu-items/{item_id}", response_model=MenuItemResponse)
+def admin_update_menu_item(
+    item_id: int,
+    payload: MenuItemUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    item = db.get(MenuItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(item, k, v)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/menu-items/{item_id}", status_code=204)
+def admin_delete_menu_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    item = db.get(MenuItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+    db.delete(item)
+    db.commit()
+    return None
+
+
+@router.patch("/menu-items/{item_id}/toggle", response_model=MenuItemResponse)
+def admin_toggle_menu_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    item = db.get(MenuItem, item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+    item.is_active = not item.is_active
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+# ══════════════════════════════════════════════
+# DINING ROOMS
+# ══════════════════════════════════════════════
+
+@router.get("/dining-rooms", response_model=List[DiningRoomRead])
+def admin_list_dining_rooms(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return db.query(DiningRoom).order_by(DiningRoom.id.asc()).all()
+
+
+@router.post("/dining-rooms", response_model=DiningRoomRead, status_code=201)
+def admin_create_dining_room(
+    payload: DiningRoomCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    room = DiningRoom(**payload.model_dump())
+    db.add(room)
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+@router.patch("/dining-rooms/{room_id}", response_model=DiningRoomRead)
+def admin_update_dining_room(
+    room_id: int,
+    payload: DiningRoomCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    room = db.get(DiningRoom, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="Dining room not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(room, k, v)
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+@router.delete("/dining-rooms/{room_id}", status_code=204)
+def admin_delete_dining_room(
+    room_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    room = db.get(DiningRoom, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="Dining room not found")
+    db.delete(room)
+    db.commit()
+    return None
+
+
+@router.patch("/dining-rooms/{room_id}/toggle", response_model=DiningRoomRead)
+def admin_toggle_dining_room(
+    room_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    room = db.get(DiningRoom, room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail="Dining room not found")
+    room.is_active = not room.is_active
+    db.commit()
+    db.refresh(room)
+    return room
+
+
+# ══════════════════════════════════════════════
+# TABLES
+# ══════════════════════════════════════════════
+
+@router.get("/tables", response_model=List[TableRead])
+def admin_list_tables(
+    dining_room_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(Table)
+    if dining_room_id:
+        q = q.filter(Table.dining_room_id == dining_room_id)
+    return q.order_by(Table.dining_room_id.asc(), Table.id.asc()).all()
+
+
+@router.post("/tables", response_model=TableRead, status_code=201)
+def admin_create_table(
+    payload: TableCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    table = Table(**payload.model_dump())
+    db.add(table)
+    db.commit()
+    db.refresh(table)
+    return table
+
+
+@router.patch("/tables/{table_id}", response_model=TableRead)
+def admin_update_table(
+    table_id: int,
+    payload: TableCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    table = db.get(Table, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(table, k, v)
+    db.commit()
+    db.refresh(table)
+    return table
+
+
+@router.delete("/tables/{table_id}", status_code=204)
+def admin_delete_table(
+    table_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    table = db.get(Table, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    db.delete(table)
+    db.commit()
+    return None
+
+
+@router.patch("/tables/{table_id}/toggle", response_model=TableRead)
+def admin_toggle_table(
+    table_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    table = db.get(Table, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    table.is_active = not table.is_active
+    db.commit()
+    db.refresh(table)
+    return table
+
+
+# ══════════════════════════════════════════════
+# ORDERS (kitchen view)
+# ══════════════════════════════════════════════
+
+@router.get("/orders", response_model=List[OrderResponse])
+def admin_list_orders(
+    status: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(Order)
+    if status:
+        q = q.filter(Order.status == status)
+    return q.order_by(Order.id.desc()).all()
+
+
+@router.patch("/orders/{order_id}/fulfill", response_model=OrderResponse)
+def admin_fulfill_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.status != "fired":
+        raise HTTPException(status_code=400, detail="Order must be fired before fulfilling")
+    order.status = "fulfilled"
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.delete("/orders/{order_id}", status_code=204)
+def admin_delete_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    db.delete(order)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# MESSAGES
+# ══════════════════════════════════════════════
+
+@router.get("/messages")
+def admin_list_messages(
+    reservation_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(Message).options(selectinload(Message.sender))
+    if reservation_id:
+        q = q.filter(Message.reservation_id == reservation_id)
+    return q.order_by(Message.created_at.desc()).all()
+
+
+@router.delete("/messages/{message_id}", status_code=204)
+def admin_delete_message(
+    message_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    message = db.get(Message, message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    db.delete(message)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# SEAT ASSIGNMENTS
+# ══════════════════════════════════════════════
+
+@router.get("/seat-assignments")
+def admin_list_seat_assignments(
+    date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(SeatAssignment).options(
+        selectinload(SeatAssignment.reservation),
+        selectinload(SeatAssignment.table),
+    )
+    if date:
+        q = q.join(Reservation).filter(Reservation.date == date)
+    return q.order_by(SeatAssignment.id.asc()).all()
+
+
+@router.delete("/seat-assignments/{assignment_id}", status_code=204)
+def admin_delete_seat_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    assignment = db.get(SeatAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    db.delete(assignment)
+    db.commit()
+    return None
+
+
+# ══════════════════════════════════════════════
+# DAILY VIEW
+# ══════════════════════════════════════════════
+
+@router.get("/daily")
+def admin_daily_view(
+    date: date = Query(...),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    reservations = (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees),
+            selectinload(Reservation.seat_assignment).selectinload(SeatAssignment.table),
+            selectinload(Reservation.messages),
+        )
+        .filter(Reservation.date == date)
+        .order_by(Reservation.start_time.asc())
+        .all()
+    )
+
+    result = []
+    for r in reservations:
+        table_info = None
+        if r.seat_assignment:
+            t = r.seat_assignment.table
+            table_info = {"table_id": t.id, "table_name": t.name, "seat_count": t.seat_count}
+
+        result.append({
+            "reservation_id": r.id,
+            "user_id": r.user_id,
+            "date": r.date,
+            "start_time": r.start_time,
+            "end_time": r.end_time,
+            "status": r.status,
+            "notes": r.notes,
+            "dining_room_id": r.dining_room_id,
+            "party_size": len(r.attendees),
+            "table": table_info,
+            "message_count": len(r.messages),
+        })
+
+    return {"date": date, "reservations": result, "total": len(result)}
+```
+
+==================================================
+
+--- BATCH 32 | src/app/api/routes/auth.py ---
+STATAUS: ✅ OPTIMAL SIZE (177 lines)
+### FILE: src/app/api/routes/auth.py
+```python
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+from jose import jwt, JWTError
+from typing import Optional
+
+from app.api.deps.auth import (
+    verify_password,
+    hash_password,
+    create_access_token,
+    get_current_user,
+)
+from app.api.deps.db import get_db
+from app.core.config import get_settings
+from app.models.revoked_token import RevokedToken
+from app.models.user import User
+
+settings = get_settings()
+
+router = APIRouter(prefix="/auth", tags=["Auth"])
+
+# --- Schemas ---
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+# --- Routes ---
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def register(
+    request: UserRegister, 
+    db: Session = Depends(get_db)
+):
+    """
+    Register a new User and automatically create their Primary Member profile.
+    This ensures the user is immediately 'seatable' in the reservation system.
+    """
+    from app.models.member import Member  # Local import to prevent circular dependency
+
+    email_clean = request.email.lower().strip()
+    
+    # Check if user already exists
+    if db.query(User).filter(User.email == email_clean).first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, 
+            detail="Email already registered"
+        )
+
+    # 1. Create the User record
+    user = User(
+        email=email_clean,
+        password_hash=hash_password(request.password),
+        role="member",
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()  # Push to DB to generate user.id
+
+    # 2. Create the Primary Member profile
+    # Use full_name if provided, otherwise derive from email
+    name = request.full_name or email_clean.split("@")[0].capitalize()
+    member = Member(
+        user_id=user.id,
+        name=name,
+        relation="Primary"
+    )
+    db.add(member)
+    
+    db.commit()
+    db.refresh(user)
+
+    # 3. Generate tokens for immediate login
+    access_token = create_access_token(subject=str(user.id))
+    refresh_token = create_access_token(subject=str(user.id), is_refresh=True)
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token
+    )
+
+
+@router.post("/login", response_model=TokenResponse)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    """Standard OAuth2 login flow."""
+    user = db.query(User).filter(User.email == form_data.username.lower().strip()).first()
+
+    if not user or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is deactivated")
+
+    access_token = create_access_token(subject=str(user.id))
+    refresh_token = create_access_token(subject=str(user.id), is_refresh=True)
+
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token
+    )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh(
+    data: RefreshRequest, 
+    db: Session = Depends(get_db)
+):
+    """Exchange a refresh token for a new set of tokens (Token Rotation)."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or revoked refresh token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(
+            data.refresh_token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        sub = payload.get("sub")
+        jti = payload.get("jti")
+        token_type = payload.get("type")
+
+        if not isinstance(sub, str) or not isinstance(jti, str) or token_type != "refresh":
+            raise credentials_exception
+
+        user_id = int(sub)
+    except (JWTError, ValueError):
+        raise credentials_exception
+
+    # Check if token has been revoked
+    revoked = db.query(RevokedToken).filter(RevokedToken.jti == jti).first()
+    if revoked:
+        raise credentials_exception
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise credentials_exception
+
+    # Revoke old token and rotate
+    db.add(RevokedToken(jti=jti))
+    db.commit()
+
+    return TokenResponse(
+        access_token=create_access_token(subject=str(user.id)),
+        refresh_token=create_access_token(subject=str(user.id), is_refresh=True)
+    )
+
+
+@router.get("/me")
+def me(current_user: User = Depends(get_current_user)):
+    """Return the current authenticated user's profile info."""
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "role": current_user.role,
+        "is_active": current_user.is_active,
+    }
+```
+
+==================================================
+
+--- BATCH 33 | src/app/api/routes/dining_rooms.py ---
+STATAUS: ✅ OPTIMAL SIZE (52 lines)
+### FILE: src/app/api/routes/dining_rooms.py
+```python
+# app/api/routes/dining_rooms.py
+from __future__ import annotations
+
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.api.deps.db import get_db
+from app.models.dining_room import DiningRoom
+from app.schemas import DiningRoomCreate, DiningRoomRead
+from app.api.deps.auth import get_current_user
+from app.models.user import User
+
+router = APIRouter(prefix="/dining-rooms", tags=["dining_rooms"])
+
+
+def _require_admin(user: User) -> None:
+    if getattr(user, "role", None) != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+
+@router.get("", response_model=List[DiningRoomRead])
+def list_dining_rooms(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # authenticated users can view active rooms
+    rooms = db.query(DiningRoom).filter(DiningRoom.is_active.is_(True)).order_by(DiningRoom.name).all()
+    return rooms
+
+
+@router.post("", response_model=DiningRoomRead, status_code=status.HTTP_201_CREATED)
+def create_dining_room(
+    payload: DiningRoomCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+
+    existing = db.query(DiningRoom).filter(DiningRoom.name == payload.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Dining room with this name already exists")
+
+    room = DiningRoom(
+        name=payload.name,
+        description=payload.description,
+        is_active=payload.is_active,
+    )
+    db.add(room)
+    db.commit()
+    db.refresh(room)
+    return room
+```
+
+==================================================
+
+--- BATCH 34 | src/app/api/routes/health.py ---
+STATAUS: ✅ OPTIMAL SIZE (74 lines)
+### FILE: src/app/api/routes/health.py
+```python
+# app/api/routes/health.py
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.api.deps.db import get_db
+from app.core.config import get_settings
+
+settings = get_settings()
+
+router = APIRouter(prefix="/health", tags=["System"])
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@router.get("")
+def health(db: Session = Depends(get_db)):
+    """
+    Monitoring-friendly health endpoint.
+
+    - 200 when DB is reachable.
+    - 503 when DB check fails.
+
+    Notes:
+    - "server" check is implicit: if this handler runs, the server is up.
+    - "auth" check is currently reported as "skipped" (optionally add deeper checks later).
+    """
+    started = time.perf_counter()
+
+    db_ok = True
+    db_error: Optional[str] = None
+    db_latency_ms: Optional[int] = None
+
+    # Database ping (cheap + reliable)
+    try:
+        t0 = time.perf_counter()
+        db.execute(text("SELECT 1"))
+        db_latency_ms = int((time.perf_counter() - t0) * 1000)
+    except Exception as e:  # pragma: no cover (varies by driver/env)
+        db_ok = False
+        db_error = str(e)
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+    payload: Dict[str, Any] = {
+        "status": "ok" if db_ok else "degraded",
+        "service": "aaa-backend",
+        "env": settings.ENV,
+        "time_utc": utc_now_iso(),
+        "latency_ms": elapsed_ms,
+        "checks": {
+            "server": {"status": "ok"},
+            "database": {
+                "status": "ok" if db_ok else "fail",
+                "latency_ms": db_latency_ms,
+                "error": db_error,
+            },
+            "auth": {
+                "status": "skipped",
+                "note": "Optional: add deeper auth reachability checks if needed.",
+            },
+        },
+    }
+
+    status_code = 200 if db_ok else 503
+    return JSONResponse(payload, status_code=status_code)
+```
+
+==================================================
+
+--- BATCH 35 | src/app/api/routes/members.py ---
+STATAUS: ✅ OPTIMAL SIZE (126 lines)
+### FILE: src/app/api/routes/members.py
+```python
+# app/api/routes/members.py
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from app.api.deps.db import get_db
+from app.api.deps.auth import get_current_user
+from app.models.member import Member
+from app.models.user import User
+from app.schemas.member import MemberCreate, MemberRead, MemberUpdate
+
+router = APIRouter(prefix="/members", tags=["members"])
+
+
+# Create Member
+@router.post("", response_model=MemberRead, status_code=status.HTTP_201_CREATED)
+def create_member(
+    payload: MemberCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    member = Member(
+        user_id=current_user.id,
+        name=payload.name,
+        relation=payload.relation,
+        dietary_restrictions=payload.dietary_restrictions,
+    )
+
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+# List My Members
+@router.get("", response_model=list[MemberRead])
+def list_members(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    stmt = select(Member).where(Member.user_id == current_user.id).order_by(Member.id)
+    return db.execute(stmt).scalars().all()
+
+
+# Get One
+@router.get("/{member_id}", response_model=MemberRead)
+def get_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    member = db.get(Member, member_id)
+
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    if member.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    return member
+
+
+# Update
+# app/api/routes/members.py
+@router.patch("/{member_id}", response_model=MemberRead)
+def update_member(
+    member_id: int,
+    payload: MemberUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    member = db.get(Member, member_id)
+
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    if member.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    if payload.name is not None:
+        member.name = payload.name
+
+    if payload.relation is not None:
+        member.relation = payload.relation
+
+    if payload.dietary_restrictions is not None:
+        member.dietary_restrictions = payload.dietary_restrictions
+
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+# Delete
+@router.delete("/{member_id}", status_code=204)
+def delete_member(
+    member_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    member = db.get(Member, member_id)
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    if member.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from app.models.reservation_attendee import ReservationAttendee
+
+    # Detach attendee rows that reference this member.
+    # Must set guest_name too — the check constraint requires
+    # member_id OR guest_name to be non-null, never both null.
+    attendees = db.query(ReservationAttendee)\
+        .filter(ReservationAttendee.member_id == member_id)\
+        .all()
+
+    for att in attendees:
+        att.guest_name = member.name  # preserve the name as a guest record
+        att.member_id = None
+
+    db.flush()  # apply the attendee updates before deleting the member
+    db.delete(member)
+    db.commit()
+    return None
+
+```
+
+==================================================
+
+--- BATCH 36 | src/app/api/routes/menu_items.py ---
+STATAUS: ✅ OPTIMAL SIZE (80 lines)
+### FILE: src/app/api/routes/menu_items.py
+```python
+# app/api/routes/menu_items.py
+from __future__ import annotations
+
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user, get_current_user_optional
+from app.api.deps.db import get_db
+from app.models.menu_item import MenuItem
+from app.models.user import User
+from app.schemas.menu_item import MenuItemCreate, MenuItemResponse, MenuItemUpdate
+
+
+router = APIRouter(prefix="/menu-items", tags=["menu_items"])
+
+
+def require_admin(user: User) -> None:
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required",
+        )
+
+
+@router.get("", response_model=List[MenuItemResponse])
+def list_menu_items(
+    include_inactive: bool = Query(False, description="Include inactive items (admin only)"),
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),  # public — no auth required
+):
+    q = db.query(MenuItem)
+    # Only admins with include_inactive=true see inactive items
+    # Unauthenticated users, members, staff — active only
+    if not include_inactive or not user or user.role != "admin":
+        q = q.filter(MenuItem.is_active.is_(True))
+    return q.order_by(MenuItem.name.asc()).all()
+
+
+@router.post("", response_model=MenuItemResponse, status_code=status.HTTP_201_CREATED)
+def create_menu_item(
+    payload: MenuItemCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_admin(user)
+
+    item = MenuItem(
+        name=payload.name,
+        description=payload.description,
+        price_cents=payload.price_cents,
+        dietary_restrictions=payload.dietary_restrictions,
+        is_active=payload.is_active,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/{menu_item_id}", response_model=MenuItemResponse)
+def update_menu_item(
+    menu_item_id: int,
+    payload: MenuItemUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    require_admin(user)
+
+    item = db.get(MenuItem, menu_item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(item, k, v)
+
+    db.commit()
+    db.refresh(item)
+    return item
+```
+
+==================================================
+
+--- BATCH 37 | src/app/api/routes/messages.py ---
+STATAUS: ✅ OPTIMAL SIZE (62 lines)
+### FILE: src/app/api/routes/messages.py
+```python
+# app/api/routes/messages.py
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.api.deps.db import get_db
+from app.models.message import Message
+from app.models.reservation import Reservation
+from app.schemas.messages import MessageCreate, MessageResponse
+from app.api.deps.auth import get_current_user
+from app.models.user import User
+
+router = APIRouter(prefix="/messages", tags=["messages"])
+
+
+# -----------------------------------------------------------
+# List messages for a reservation
+# -----------------------------------------------------------
+@router.get("/by-reservation/{reservation_id}", response_model=list[MessageResponse])
+def list_messages(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    messages = (
+        db.query(Message)
+        .filter(Message.reservation_id == reservation_id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+
+    return messages
+
+
+# -----------------------------------------------------------
+# Post message to reservation
+# -----------------------------------------------------------
+@router.post("", response_model=MessageResponse, status_code=status.HTTP_201_CREATED)
+def create_message(
+    payload: MessageCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = db.get(Reservation, payload.reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    message = Message(
+        reservation_id=payload.reservation_id,
+        sender_user_id=current_user.id,
+        body=payload.body,
+    )
+
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+    return message
+```
+
+==================================================
+
+--- BATCH 38 | src/app/api/routes/order_items.py ---
+STATAUS: ✅ OPTIMAL SIZE (128 lines)
+### FILE: src/app/api/routes/order_items.py
+```python
+# app/api/routes/order_items.py
+from __future__ import annotations
+
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.menu_item import MenuItem
+from app.models.order import Order
+from app.models.order_item import OrderItem
+from app.models.reservation_attendee import ReservationAttendee
+from app.models.user import User
+from app.schemas.order_items import OrderItemCreateRequest, OrderItemResponse, OrderItemUpdateRequest
+
+router = APIRouter(prefix="/order-items", tags=["order_items"])
+
+
+def _require_order_access(db: Session, user: User, order_id: int) -> Order:
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    attendee = db.get(ReservationAttendee, order.attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+
+    if attendee.reservation.user_id != user.id and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    return order
+
+
+@router.get("/by-order/{order_id}", response_model=List[OrderItemResponse])
+def list_items_for_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    _require_order_access(db, user, order_id)
+
+    return (
+        db.query(OrderItem)
+        .filter(OrderItem.order_id == order_id)
+        .order_by(OrderItem.id.asc())
+        .all()
+    )
+
+
+@router.post("/by-order/{order_id}", response_model=OrderItemResponse)
+def add_item_to_order(
+    order_id: int,
+    payload: OrderItemCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    order = _require_order_access(db, user, order_id)
+
+    # Lifecycle lock: members cannot add items to a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
+    menu_item = db.get(MenuItem, payload.menu_item_id)
+    if not menu_item:
+        raise HTTPException(status_code=404, detail="Menu item not found")
+
+    item = OrderItem(
+        order_id=order_id,
+        menu_item_id=payload.menu_item_id,
+        quantity=payload.quantity,
+        status=payload.status,
+        meta=payload.meta,
+        name_snapshot=menu_item.name,
+        price_cents_snapshot=menu_item.price_cents,
+    )
+
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/{order_item_id}", response_model=OrderItemResponse)
+def update_order_item(
+    order_item_id: int,
+    payload: OrderItemUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    item = db.get(OrderItem, order_item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+
+    order = _require_order_access(db, user, item.order_id)
+
+    # Lifecycle lock: members cannot edit items on a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(item, k, v)
+
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/{order_item_id}", status_code=204)
+def delete_order_item(
+    order_item_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    item = db.get(OrderItem, order_item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Order item not found")
+
+    order = _require_order_access(db, user, item.order_id)
+
+    # Lifecycle lock: members cannot remove items from a fired or fulfilled order
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
+    db.delete(item)
+    db.commit()
+    return None
+```
+
+==================================================
+
+--- BATCH 39 | src/app/api/routes/orders.py ---
+STATAUS: ✅ OPTIMAL SIZE (207 lines)
+### FILE: src/app/api/routes/orders.py
+```python
+# app/api/routes/orders.py
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session, selectinload
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.order import Order
+from app.models.order_item import OrderItem
+from app.models.reservation import Reservation
+from app.models.reservation_attendee import ReservationAttendee
+from app.models.seat_assignment import SeatAssignment
+from app.models.table import Table
+from app.models.user import User
+from app.schemas.orders import OrderEnsureRequest, OrderResponse, OrderUpdateRequest
+
+router = APIRouter(prefix="/orders", tags=["orders"])
+
+
+def _require_attendee_ownership(db: Session, user: User, attendee_id: int) -> ReservationAttendee:
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+    if attendee.reservation.user_id != user.id and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return attendee
+
+
+def _require_staff(user: User) -> None:
+    if user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=403, detail="Staff only")
+
+
+@router.post("/ensure", response_model=OrderResponse)
+def ensure_order(
+    payload: OrderEnsureRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    attendee = _require_attendee_ownership(db, user, payload.attendee_id)
+    if attendee.order:
+        return attendee.order
+    order = Order(attendee_id=attendee.id, status="open")
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.patch("/{order_id}", response_model=OrderResponse)
+def update_order(
+    order_id: int,
+    payload: OrderUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    _require_attendee_ownership(db, user, order.attendee_id)
+
+    if order.status in ("fired", "fulfilled") and user.role not in ("admin", "staff"):
+        raise HTTPException(status_code=409, detail="Order is locked")
+
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(order, k, v)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.post("/{order_id}/fire", response_model=OrderResponse)
+def fire_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # Staff/admin only — members cannot fire orders regardless of ownership
+    _require_staff(user)
+
+    order = db.query(Order).options(
+        selectinload(Order.items)
+    ).filter(Order.id == order_id).first()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if order.status == "fired":
+        raise HTTPException(status_code=400, detail="Order already fired")
+    if order.status == "fulfilled":
+        raise HTTPException(status_code=400, detail="Order already fulfilled")
+    if not order.items:
+        raise HTTPException(status_code=400, detail="Cannot fire an empty order")
+
+    order.status = "fired"
+    for item in order.items:
+        if item.status == "selected":
+            item.status = "confirmed"
+
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.get("/{order_id}/chit", response_class=HTMLResponse)
+def get_chit(
+    order_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    # Staff/admin only
+    _require_staff(user)
+
+    order = (
+        db.query(Order)
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.attendee)
+                .selectinload(ReservationAttendee.reservation)
+                .selectinload(Reservation.seat_assignment)
+                .selectinload(SeatAssignment.table)
+                .selectinload(Table.dining_room),
+            selectinload(Order.attendee)
+                .selectinload(ReservationAttendee.member),
+        )
+        .filter(Order.id == order_id)
+        .first()
+    )
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    attendee = order.attendee
+    reservation = attendee.reservation
+
+    seat_info = "Unassigned"
+    if reservation.seat_assignment and reservation.seat_assignment.table:
+        table = reservation.seat_assignment.table
+        room = table.dining_room
+        seat_info = f"{room.name} — {table.name}"
+
+    if attendee.member_id and attendee.member:
+        name = attendee.member.name
+    else:
+        name = attendee.guest_name or "Guest"
+
+    dietary = ", ".join(attendee.dietary_restrictions) if attendee.dietary_restrictions else "None"
+
+    items_html = ""
+    for item in order.items:
+        if item.status in ("selected", "confirmed"):
+            items_html += f"""
+            <tr>
+                <td>{item.name_snapshot or "—"}</td>
+                <td>{item.quantity}</td>
+                <td>${(item.price_cents_snapshot or 0) / 100:.2f}</td>
+            </tr>"""
+
+    fired_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Chit #{order_id}</title>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: monospace; font-size: 13px; padding: 24px; max-width: 400px; }}
+  h1 {{ font-size: 18px; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px; }}
+  .meta {{ margin-bottom: 16px; line-height: 1.8; }}
+  .meta strong {{ display: inline-block; width: 120px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+  th {{ text-align: left; border-bottom: 1px solid #000; padding: 4px 0; font-size: 11px; text-transform: uppercase; }}
+  td {{ padding: 6px 0; border-bottom: 1px dotted #ccc; }}
+  .footer {{ margin-top: 20px; font-size: 11px; color: #666; border-top: 1px solid #000; padding-top: 8px; }}
+  @media print {{
+    body {{ padding: 8px; }}
+    button {{ display: none; }}
+  }}
+</style>
+</head>
+<body>
+<h1>KITCHEN CHIT #{order_id}</h1>
+<div class="meta">
+  <div><strong>Guest:</strong> {name}</div>
+  <div><strong>Table:</strong> {seat_info}</div>
+  <div><strong>Date:</strong> {reservation.date}</div>
+  <div><strong>Time:</strong> {reservation.start_time}</div>
+  <div><strong>Dietary:</strong> {dietary}</div>
+  <div><strong>Fired:</strong> {fired_at}</div>
+</div>
+<table>
+  <thead><tr><th>Item</th><th>Qty</th><th>Price</th></tr></thead>
+  <tbody>{items_html if items_html else "<tr><td colspan='3'>No items confirmed</td></tr>"}</tbody>
+</table>
+<div class="footer">Order #{order_id} — Abeyton Lodge</div>
+<br>
+<button onclick="window.print()">PRINT</button>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html)
+```
+
+==================================================
+
+--- BATCH 40 | src/app/api/routes/reservation_attendees.py ---
+STATAUS: ✅ OPTIMAL SIZE (121 lines)
+### FILE: src/app/api/routes/reservation_attendees.py
+```python
+# app/api/routes/reservation_attendees.py
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from app.api.deps.db import get_db
+from app.api.deps.auth import get_current_user
+from app.models.user import User
+from app.models.reservation import Reservation
+from app.models.reservation_attendee import ReservationAttendee
+from app.schemas.reservation_attendee import (
+    ReservationAttendeeCreate,
+    ReservationAttendeeUpdate,
+    ReservationAttendeeRead,
+)
+
+router = APIRouter(prefix="/reservation-attendees", tags=["reservation-attendees"])
+
+
+def _ensure_owner(db: Session, reservation_id: int, user_id: int) -> None:
+    r = db.get(Reservation, reservation_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if r.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+
+def _enum_list_to_str(values):
+    if values is None:
+        return None
+    return [v.value for v in values]
+
+
+@router.post("", response_model=ReservationAttendeeRead, status_code=status.HTTP_201_CREATED)
+def create_attendee(
+    payload: ReservationAttendeeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _ensure_owner(db, payload.reservation_id, current_user.id)
+
+    attendee = ReservationAttendee(
+        reservation_id=payload.reservation_id,
+        member_id=payload.member_id,
+        guest_name=payload.guest_name,
+        dietary_restrictions=_enum_list_to_str(payload.dietary_restrictions),
+        meta=payload.meta,
+        selection_confirmed=bool(payload.selection_confirmed) if payload.selection_confirmed is not None else False,
+    )
+
+    db.add(attendee)
+    db.commit()
+    db.refresh(attendee)
+    return attendee
+
+
+@router.get("/reservation/{reservation_id}", response_model=list[ReservationAttendeeRead])
+def list_attendees(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _ensure_owner(db, reservation_id, current_user.id)
+
+    stmt = (
+        select(ReservationAttendee)
+        .where(ReservationAttendee.reservation_id == reservation_id)
+        .order_by(ReservationAttendee.id)
+    )
+    return db.execute(stmt).scalars().all()
+
+
+@router.patch("/{attendee_id}", response_model=ReservationAttendeeRead)
+def update_attendee(
+    attendee_id: int,
+    payload: ReservationAttendeeUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+
+    # verify ownership
+    if attendee.reservation.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    # Apply only allowed fields
+    if payload.member_id is not None:
+        attendee.member_id = payload.member_id
+    if payload.guest_name is not None:
+        attendee.guest_name = payload.guest_name
+    if payload.dietary_restrictions is not None:
+        # convert enums to strings
+        attendee.dietary_restrictions = [v.value for v in payload.dietary_restrictions]
+    if payload.meta is not None:
+        attendee.meta = payload.meta
+    if payload.selection_confirmed is not None:
+        attendee.selection_confirmed = payload.selection_confirmed
+
+    db.commit()
+    db.refresh(attendee)
+    return attendee
+
+
+@router.delete("/{attendee_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_attendee(
+    attendee_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    attendee = db.get(ReservationAttendee, attendee_id)
+    if not attendee:
+        raise HTTPException(status_code=404, detail="Attendee not found")
+
+    _ensure_owner(db, attendee.reservation_id, current_user.id)
+
+    db.delete(attendee)
+    db.commit()
+    return None
+```
+
+==================================================
+
+--- BATCH 41 | src/app/api/routes/reservations.py ---
+STATAUS: ✅ OPTIMAL SIZE (219 lines)
+### FILE: src/app/api/routes/reservations.py
+```python
+# app/api/routes/reservations.py
+from __future__ import annotations
+
+from datetime import date
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, selectinload
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.order import Order
+from app.models.reservation import Reservation
+from app.models.reservation_attendee import ReservationAttendee
+from app.models.user import User
+from app.schemas.reservation import ReservationCreate, ReservationRead, ReservationUpdate
+from app.schemas.reservation_bootstrap import ReservationBootstrapResponse
+
+router = APIRouter(prefix="/reservations", tags=["reservations"])
+
+
+def _bootstrap_query(db: Session, reservation_id: int):
+    return (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.order)
+            .selectinload(Order.items),
+            selectinload(Reservation.messages),
+        )
+        .filter(Reservation.id == reservation_id)
+        .first()
+    )
+
+
+# ── LIST ──────────────────────────────────────────────────
+@router.get("", response_model=List[ReservationRead])
+def list_reservations(
+    status: Optional[str] = Query(None),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    q = db.query(Reservation).filter(Reservation.user_id == current_user.id)
+    if status:
+        q = q.filter(Reservation.status == status)
+    if from_date:
+        q = q.filter(Reservation.date >= from_date)
+    if to_date:
+        q = q.filter(Reservation.date <= to_date)
+    return q.order_by(Reservation.date.asc(), Reservation.start_time.asc()).all()
+
+
+# ── CREATE ────────────────────────────────────────────────
+@router.post("", response_model=ReservationRead, status_code=201)
+def create_reservation(
+    payload: ReservationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = Reservation(
+        user_id=current_user.id,
+        date=payload.date,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        status=payload.status or "draft",
+        notes=payload.notes,
+        dining_room_id=payload.dining_room_id,
+    )
+    db.add(reservation)
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+# ── GET ───────────────────────────────────────────────────
+@router.get("/{reservation_id}", response_model=ReservationRead)
+def get_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    return reservation
+
+
+# ── UPDATE ────────────────────────────────────────────────
+@router.patch("/{reservation_id}", response_model=ReservationRead)
+def update_reservation(
+    reservation_id: int,
+    payload: ReservationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # Lifecycle lock: once confirmed or cancelled, members can only
+    # switch between "cancelled" and "draft" — no editing other fields
+    if reservation.status != "draft":
+        allowed_fields = {"status", "dining_room_id"}
+        disallowed = set(data.keys()) - allowed_fields
+        if disallowed:
+            raise HTTPException(
+                status_code=409,
+                detail="Reservation is locked. Only status changes are allowed.",
+            )
+        new_status = data.get("status")
+        if new_status and new_status not in ("cancelled", "draft"):
+            raise HTTPException(
+                status_code=409,
+                detail="Only cancellation or restoration to draft is allowed.",
+            )
+
+    for k, v in data.items():
+        setattr(reservation, k, v)
+
+    db.commit()
+    db.refresh(reservation)
+    return reservation
+
+
+# ── DELETE ────────────────────────────────────────────────
+@router.delete("/{reservation_id}", status_code=204)
+def delete_reservation(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = db.get(Reservation, reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    if reservation.status not in ("draft", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a confirmed reservation.",
+        )
+    db.delete(reservation)
+    db.commit()
+    return None
+
+
+# ── BOOTSTRAP ─────────────────────────────────────────────
+@router.get("/{reservation_id}/bootstrap", response_model=ReservationBootstrapResponse)
+def get_reservation_bootstrap(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    reservation = _bootstrap_query(db, reservation_id)
+
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    if reservation.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    # Ensure every attendee has an order. Wrap each insert in its own
+    # try/except so a concurrent request that already created the order
+    # does not blow up the whole bootstrap.
+    created = False
+    for attendee in reservation.attendees:
+        existing = db.query(Order).filter(Order.attendee_id == attendee.id).first()
+        if not existing:
+            try:
+                db.add(Order(attendee_id=attendee.id, status="open"))
+                db.flush()
+                created = True
+            except Exception:
+                db.rollback()
+
+    if created:
+        db.commit()
+        reservation = _bootstrap_query(db, reservation_id)
+        if not reservation:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+
+    attendees = reservation.attendees
+    messages = reservation.messages
+    orders = [a.order for a in attendees if a.order]
+    order_items = [item for o in orders for item in o.items]
+    party_size = len(attendees)
+    order_totals = {}
+    reservation_total = 0
+
+    for order in orders:
+        total = 0
+        for item in order.items:
+            if item.status != "selected":
+                continue
+            if item.price_cents_snapshot is None or item.quantity is None:
+                continue
+            total += item.price_cents_snapshot * item.quantity
+        order_totals[order.id] = total
+        reservation_total += total
+
+    return {
+        "reservation": reservation,
+        "party_size": party_size,
+        "attendees": attendees,
+        "orders": orders,
+        "order_items": order_items,
+        "order_totals": order_totals,
+        "reservation_total": reservation_total,
+        "messages": messages,
+    }
+```
+
+==================================================
+
+--- BATCH 42 | src/app/api/routes/schema.py ---
+STATAUS: ✅ OPTIMAL SIZE (220 lines)
+### FILE: src/app/api/routes/schema.py
+```python
+# app/api/routes/schema.py
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.user import User
+from app.models.table import Table
+
+router = APIRouter(prefix="/schema", tags=["schema"])
+
+DIETARY_OPTIONS = [
+    "dairy_free", "egg_free", "fish_allergy", "gluten_free",
+    "halal", "kosher", "nut_allergy", "peanut_allergy",
+    "sesame_allergy", "shellfish_allergy", "soy_free", "vegan", "vegetarian"
+]
+
+SCHEMA = {
+    "reservation": {
+        "endpoint": "/api/reservations",
+        "bootstrap": "/api/reservations/{id}/bootstrap",
+        "fields": {
+            "date":       { "type": "date",   "required": True,  "label": "Date" },
+            "start_time": { "type": "time",   "required": True,  "label": "Start Time" },
+            "end_time":   { "type": "time",   "required": False, "label": "End Time" },
+            "status":     { "type": "enum",   "required": False, "label": "Status",
+                            "options": ["draft", "confirmed", "cancelled"],
+                            "default": "draft" },
+            "notes":      { "type": "textarea","required": False, "label": "Notes",
+                            "maxLength": 500 },
+        },
+        "children": ["attendee"],
+    },
+
+    "attendee": {
+        "endpoint": "/api/reservation-attendees",
+        "fields": {
+            "member_id":   { "type": "member_select", "required": False, "label": "Member" },
+            "guest_name":  { "type": "text",   "required": False, "label": "Guest Name",
+                             "maxLength": 120,
+                             "note": "Required if no member selected" },
+            "dietary_restrictions": {
+                "type": "multiselect", "required": False,
+                "label": "Dietary Restrictions",
+                "options": DIETARY_OPTIONS
+            },
+            "selection_confirmed": { "type": "boolean", "required": False,
+                                     "label": "Selection Confirmed", "default": False },
+        },
+        "validation": "member_id OR guest_name required",
+        "children": ["order"],
+    },
+
+    "order": {
+        "endpoint": "/api/orders",
+        "ensure_endpoint": "/api/orders/ensure",
+        "fire_endpoint": "/api/orders/{id}/fire",
+        "chit_endpoint": "/api/orders/{id}/chit",
+        "fields": {
+            "status": { "type": "enum", "required": False, "label": "Status",
+                        "options": ["open", "fired", "fulfilled"], "default": "open" },
+            "notes":  { "type": "textarea", "required": False, "label": "Notes",
+                        "maxLength": 500 },
+        },
+        "children": ["order_item"],
+        "lifecycle": {
+            "open":      { "editable": True,  "can_fire": True  },
+            "fired":     { "editable": False, "can_fire": False },
+            "fulfilled": { "editable": False, "can_fire": False },
+        }
+    },
+
+    "order_item": {
+        "endpoint": "/api/order-items",
+        "list_endpoint": "/api/order-items/by-order/{order_id}",
+        "create_endpoint": "/api/order-items/by-order/{order_id}",
+        "fields": {
+            "menu_item_id": { "type": "menu_select", "required": True,  "label": "Menu Item" },
+            "quantity":     { "type": "number",      "required": False, "label": "Quantity",
+                              "min": 1, "default": 1 },
+            "status":       { "type": "enum",        "required": False, "label": "Status",
+                              "options": ["selected", "confirmed", "served", "canceled"],
+                              "default": "selected" },
+        },
+        "display": {
+            "use_snapshot_name":  True,
+            "use_snapshot_price": True,
+            "fallback_to_live":   True,
+        }
+    },
+
+    "member": {
+        "endpoint": "/api/members",
+        "fields": {
+            "name":     { "type": "text",        "required": True,  "label": "Name",
+                          "maxLength": 120 },
+            "relation": { "type": "text",        "required": False, "label": "Relation",
+                          "maxLength": 50,
+                          "placeholder": "e.g. spouse, colleague, guest" },
+            "dietary_restrictions": {
+                "type": "multiselect", "required": False,
+                "label": "Dietary Restrictions",
+                "options": DIETARY_OPTIONS
+            },
+        },
+    },
+
+    "menu_item": {
+        "endpoint": "/api/menu-items",
+        "fields": {
+            "name":        { "type": "text",     "required": True,  "label": "Name",
+                             "maxLength": 140 },
+            "description": { "type": "textarea", "required": False, "label": "Description",
+                             "maxLength": 500 },
+            "price_cents": { "type": "price",    "required": True,  "label": "Price",
+                             "min": 0,
+                             "note": "Stored as cents. UI shows dollars." },
+            "dietary_restrictions": {
+                "type": "multiselect", "required": False,
+                "label": "Dietary Accommodations",
+                "options": DIETARY_OPTIONS,
+                "note": "What this item accommodates"
+            },
+            "is_active":   { "type": "boolean",  "required": False, "label": "Active",
+                             "default": True },
+        },
+        "admin_only": True,
+    },
+
+    "dining_room": {
+        "endpoint": "/api/dining-rooms",
+        "fields": {
+            "name":        { "type": "text",     "required": True,  "label": "Name",
+                             "maxLength": 120 },
+            "description": { "type": "textarea", "required": False, "label": "Description",
+                             "maxLength": 255 },
+            "is_active":   { "type": "boolean",  "required": False, "label": "Active",
+                             "default": True },
+        },
+        "admin_only": True,
+    },
+
+    "table": {
+        "endpoint": "/api/tables",
+        "fields": {
+            "name":           { "type": "text",    "required": True, "label": "Name",
+                                "maxLength": 80 },
+            "dining_room_id": { "type": "relation","required": True, "label": "Dining Room",
+                                "relation_entity": "dining_room" },
+            "seat_count":     { "type": "number",  "required": True, "label": "Seat Count",
+                                "min": 1 },
+            "is_active":      { "type": "boolean", "required": False,"label": "Active",
+                                "default": True },
+        },
+        "admin_only": True,
+    },
+
+    "seat_assignment": {
+        "endpoint": "/api/seat-assignments",
+        "fields": {
+            "reservation_id": { "type": "int",     "required": True, "label": "Reservation" },
+            "table_id":       { "type": "relation","required": True, "label": "Table",
+                                "relation_entity": "table" },
+            "notes":          { "type": "textarea","required": False,"label": "Notes",
+                                "maxLength": 500 },
+        },
+        "staff_only": True,
+    },
+
+    "message": {
+        "endpoint": "/api/messages",
+        "list_endpoint": "/api/messages/by-reservation/{reservation_id}",
+        "fields": {
+            "body": { "type": "textarea", "required": True, "label": "Message",
+                      "minLength": 1 },
+        },
+        "append_only": True,
+    },
+
+    "user": {
+        "endpoint": "/api/users",
+        "fields": {
+            "email":    { "type": "email",    "required": True,  "label": "Email" },
+            "password": { "type": "password", "required": True,  "label": "Password",
+                          "note": "Max 72 bytes. Write-only — never returned." },
+            "role":     { "type": "enum",     "required": False, "label": "Role",
+                          "options": ["member", "staff", "admin"],
+                          "default": "member",
+                          "admin_only": True },
+        },
+    },
+}
+
+
+@router.get("")
+def get_schema(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    max_capacity = (
+        db.query(func.max(Table.seat_count))
+        .filter(Table.is_active == True)
+        .scalar() or 4
+    )
+
+    schema = SCHEMA if current_user.role == "admin" else {
+        k: v for k, v in SCHEMA.items()
+        if not v.get("admin_only") and not v.get("staff_only")
+    }
+
+    return {
+        **schema,
+        "_config": {
+            "max_party_size": max_capacity
+        }
+    }
+
+
+```
+
+==================================================
+
+--- BATCH 43 | src/app/api/routes/seat_assignments.py ---
+STATAUS: ✅ OPTIMAL SIZE (175 lines)
+### FILE: src/app/api/routes/seat_assignments.py
+```python
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.reservation import Reservation
+from app.models.seat_assignment import SeatAssignment
+from app.models.user import User
+from app.schemas.seat_assignment import (
+    SeatAssignmentCreate,
+    SeatAssignmentRead,
+    SeatAssignmentUpdate,
+)
+
+router = APIRouter(prefix="/seat-assignments", tags=["seat_assignments"])
+
+
+def _require_staff(user: User) -> None:
+    if getattr(user, "role", None) not in ("staff", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Staff only")
+
+
+def _reservation_window(reservation: Reservation) -> tuple[datetime, datetime]:
+    """
+    Build start_at/end_at for seat assignment from Reservation date + times.
+
+    If end_time is NULL, default to +90 minutes (must stay consistent with migration backfill).
+    """
+    start_at = datetime.combine(reservation.date, reservation.start_time)
+
+    if reservation.end_time:
+        end_at = datetime.combine(reservation.date, reservation.end_time)
+    else:
+        end_at = start_at + timedelta(minutes=90)
+
+    if end_at <= start_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Reservation end time must be after start time",
+        )
+
+    return start_at, end_at
+
+
+@router.get("/{reservation_id}", response_model=SeatAssignmentRead)
+def get_assignment(
+    reservation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assignment = (
+        db.query(SeatAssignment)
+        .filter(SeatAssignment.reservation_id == reservation_id)
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(
+            status_code=404,
+            detail="No seat assignment for this reservation",
+        )
+    return assignment
+
+
+@router.post("", response_model=SeatAssignmentRead, status_code=status.HTTP_201_CREATED)
+def create_assignment(
+    payload: SeatAssignmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_staff(current_user)
+
+    existing = (
+        db.query(SeatAssignment)
+        .filter(SeatAssignment.reservation_id == payload.reservation_id)
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail="Reservation already has a table assigned. Use PATCH to update.",
+        )
+
+    reservation = db.get(Reservation, payload.reservation_id)
+    if not reservation:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+
+    start_at, end_at = _reservation_window(reservation)
+
+    assignment = SeatAssignment(
+        reservation_id=payload.reservation_id,
+        table_id=payload.table_id,
+        assigned_by_user_id=current_user.id,
+        notes=payload.notes,
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+    db.add(assignment)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Covers: EXCLUDE overlap violations and other integrity issues
+        raise HTTPException(
+            status_code=409,
+            detail="This table is already assigned during that time window.",
+        )
+
+    db.refresh(assignment)
+    return assignment
+
+
+@router.patch("/{assignment_id}", response_model=SeatAssignmentRead)
+def update_assignment(
+    assignment_id: int,
+    payload: SeatAssignmentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_staff(current_user)
+
+    assignment = db.get(SeatAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # If table_id is being changed, keep the same reservation window.
+    # If you later allow changing reservation times after assignment,
+    # you must also update start_at/end_at here or via a separate endpoint.
+    if "table_id" in data:
+        reservation = db.get(Reservation, assignment.reservation_id)
+        if not reservation:
+            raise HTTPException(status_code=404, detail="Reservation not found")
+        start_at, end_at = _reservation_window(reservation)
+        assignment.start_at = start_at
+        assignment.end_at = end_at
+
+    for k, v in data.items():
+        setattr(assignment, k, v)
+
+    assignment.assigned_by_user_id = current_user.id
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This table is already assigned during that time window.",
+        )
+
+    db.refresh(assignment)
+    return assignment
+
+
+@router.delete("/{assignment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_staff(current_user)
+
+    assignment = db.get(SeatAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    db.delete(assignment)
+    db.commit()
+    return None
+```
+
+==================================================
+
+--- BATCH 44 | src/app/api/routes/tables.py ---
+STATAUS: ✅ OPTIMAL SIZE (77 lines)
+### FILE: src/app/api/routes/tables.py
+```python
+# app/api/routes/tables.py
+from __future__ import annotations
+
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.api.deps.auth import get_current_user
+from app.api.deps.db import get_db
+from app.models.table import Table
+from app.models.user import User
+from app.schemas.table import TableCreate, TableRead
+
+router = APIRouter(prefix="/tables", tags=["tables"])
+
+
+def _require_admin(user: User) -> None:
+    if getattr(user, "role", None) != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+
+
+@router.get("", response_model=List[TableRead])
+def list_tables(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Table).order_by(Table.id).all()
+
+
+@router.get("/{table_id}", response_model=TableRead)
+def get_table(
+    table_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    table = db.get(Table, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    return table
+
+
+@router.post("", response_model=TableRead, status_code=status.HTTP_201_CREATED)
+def create_table(
+    payload: TableCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    table = Table(**payload.model_dump())
+    db.add(table)
+    db.commit()
+    db.refresh(table)
+    return table
+
+
+from sqlalchemy.exc import IntegrityError
+
+@router.delete("/{table_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_table(
+    table_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_admin(current_user)
+    table = db.get(Table, table_id)
+    if not table:
+        raise HTTPException(status_code=404, detail="Table not found")
+    try:
+        db.delete(table)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete table — it has active seat assignments. Remove assignments first."
+        )
+    return None
+```
+
+==================================================
+
+--- BATCH 45 | src/app/api/routes/users.py ---
+STATAUS: ✅ OPTIMAL SIZE (134 lines)
+### FILE: src/app/api/routes/users.py
+```python
+from typing import List
+from functools import partial
+
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.api.deps.db import get_db
+from app.api.deps.auth import hash_password, get_current_user
+from app.api.deps.permissions import require_permission
+from app.models.user import User
+from app.schemas.user import UserCreate, UserRead, UserUpdate
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+# Create partial dependencies to inject entity/action
+get_user_read_scope = partial(require_permission, entity="users", action="read")
+get_user_write_scope = partial(require_permission, entity="users", action="write")
+get_user_delete_scope = partial(require_permission, entity="users", action="delete")
+
+
+@router.post("", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+def create_user(
+    payload: UserCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+    scope: str = Depends(get_user_write_scope),
+):
+    # Only admins can create users
+    if scope != "all":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to create users",
+        )
+
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role or "member",
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Email already exists")
+    db.refresh(user)
+
+    response.headers["Location"] = f"/api/users/{user.id}"
+    return user
+
+
+@router.get("", response_model=List[UserRead])
+def list_users(
+    db: Session = Depends(get_db),
+    scope: str = Depends(get_user_read_scope),
+    current_user: User = Depends(get_current_user),
+):
+    if scope == "all":
+        return db.execute(select(User).order_by(User.id)).scalars().all()
+    else:  # member can only see self
+        return [current_user]
+
+
+@router.get("/{user_id}", response_model=UserRead)
+def get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    scope: str = Depends(get_user_read_scope),
+    current_user: User = Depends(get_current_user),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if scope == "own" and user.id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have access to this user")
+
+    return user
+
+
+@router.put("/{user_id}", response_model=UserRead)
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    db: Session = Depends(get_db),
+    scope: str = Depends(get_user_write_scope),
+    current_user: User = Depends(get_current_user),
+):
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Members can only update self and cannot change role
+    if scope == "own" and user.id != current_user.id:
+        raise HTTPException(status_code=403, detail="You do not have permission to update this user")
+    if scope == "own" and payload.role is not None:
+        raise HTTPException(status_code=403, detail="Members cannot update role")
+
+    # Apply updates
+    if payload.email is not None:
+        user.email = payload.email
+    if payload.password is not None:
+        user.password_hash = hash_password(payload.password)
+    if payload.role is not None:
+        user.role = payload.role  # Only admin can reach here
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Email already exists")
+
+    db.refresh(user)
+    return user
+
+
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    scope: str = Depends(get_user_delete_scope),
+    current_user: User = Depends(get_current_user),
+):
+    if scope != "all":
+        raise HTTPException(status_code=403, detail="You do not have permission to delete users")
+
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.delete(user)
+    db.commit()
+    return None
+```
+
+==================================================
+
