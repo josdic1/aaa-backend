@@ -57,10 +57,13 @@ app = FastAPI(lifespan=lifespan)
 # ── 2. CORS ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.origins_list(), # The dynamic list
+    allow_origins=settings.origins_list(),
+    allow_origin_regex=r"https://.*\.netlify\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Authorization"],
+    max_age=86400,
 )
 
 # ── 3. STATIC UTILS ──
