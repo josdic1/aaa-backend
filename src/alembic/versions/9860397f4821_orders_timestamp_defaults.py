@@ -18,15 +18,37 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Backfill NULLs first (if any)
-    op.execute("UPDATE orders SET created_at = TIMEZONE('utc', now()) WHERE created_at IS NULL;")
-    op.execute("UPDATE orders SET updated_at = TIMEZONE('utc', now()) WHERE updated_at IS NULL;")
+    op.execute("""
+DO $$
+BEGIN
+  IF to_regclass('public.orders') IS NOT NULL THEN
+    -- Backfill NULLs (defensive)
+    UPDATE orders
+    SET created_at = TIMEZONE('utc', now())
+    WHERE created_at IS NULL;
 
-    # Add/ensure server defaults
-    op.execute("ALTER TABLE orders ALTER COLUMN created_at SET DEFAULT TIMEZONE('utc', now());")
-    op.execute("ALTER TABLE orders ALTER COLUMN updated_at SET DEFAULT TIMEZONE('utc', now());")
+    UPDATE orders
+    SET updated_at = TIMEZONE('utc', now())
+    WHERE updated_at IS NULL;
+
+    -- Ensure server defaults
+    ALTER TABLE orders
+      ALTER COLUMN created_at SET DEFAULT TIMEZONE('utc', now());
+
+    ALTER TABLE orders
+      ALTER COLUMN updated_at SET DEFAULT TIMEZONE('utc', now());
+  END IF;
+END$$;
+""")
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE orders ALTER COLUMN created_at DROP DEFAULT;")
-    op.execute("ALTER TABLE orders ALTER COLUMN updated_at DROP DEFAULT;")
+    op.execute("""
+DO $$
+BEGIN
+  IF to_regclass('public.orders') IS NOT NULL THEN
+    ALTER TABLE orders ALTER COLUMN created_at DROP DEFAULT;
+    ALTER TABLE orders ALTER COLUMN updated_at DROP DEFAULT;
+  END IF;
+END$$;
+""")
