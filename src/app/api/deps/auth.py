@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -118,3 +118,22 @@ def get_current_user_optional(
         return get_current_user(db=db, token=token)
     except HTTPException:
         return None
+    
+
+def require_permission(entity: str, action: Literal["read", "write", "delete"]):
+    def dependency(user: User = Depends(get_current_user)) -> str:
+        # Rules for Staff and Admin
+        if user.role in ("admin", "staff"):
+            return "all"
+
+        # Rules for Members
+        if user.role == "member":
+            if entity in ("reservations", "users") and action in ("read", "write"):
+                return "own"
+            
+        # If none of the above match, block them
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role {user.role} is not permitted to {action} {entity}"
+        )
+    return dependency

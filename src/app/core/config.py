@@ -14,6 +14,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    STAFF_INVITE_CODE: str = Field(
+    default="",
+    description="Required code to register as staff",
+    )
+
     # ── ENVIRONMENT ──
     ENV: str = Field(
         default="dev",

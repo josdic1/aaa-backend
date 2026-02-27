@@ -631,12 +631,19 @@ def admin_toggle_table(
 @router.get("/orders", response_model=List[OrderResponse])
 def admin_list_orders(
     status: Optional[str] = Query(None),
+    date: Optional[date] = Query(None),          # ← add this
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
     q = db.query(Order)
     if status:
         q = q.filter(Order.status == status)
+    if date:
+        q = (
+            q.join(Order.attendee)
+             .join(ReservationAttendee.reservation)
+             .filter(Reservation.date == date)
+        )
     return q.order_by(Order.id.desc()).all()
 
 
