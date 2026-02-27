@@ -9,7 +9,7 @@ tasks:
   run:
     desc: "Run API server"
     cmds:
-      - uv run python run.py
+      - sh scripts/ops/ready.sh
 
   dev:
     desc: "Verify + run"

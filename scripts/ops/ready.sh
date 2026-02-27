@@ -41,5 +41,9 @@ echo "------------------------------------------------------------"
 read -p "🚀 Start Server? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    uv run python run.py
+    uv run python -m uvicorn app.main:app \
+      --host 0.0.0.0 \
+      --port 8080 \
+      --app-dir src \
+      --reload
 fi

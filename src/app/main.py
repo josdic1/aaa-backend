@@ -27,13 +27,20 @@ app = FastAPI()
 
 # --- JWT DEBUG (dev only): verify server is reading the env you expect ---
 try:
-    secret = getattr(settings, "jwt_secret", None) or getattr(settings, "JWT_SECRET", None)
-    alg = getattr(settings, "jwt_algorithm", None) or getattr(settings, "JWT_ALGORITHM", None)
+    alg = getattr(settings, "JWT_ALGORITHM", None) or "HS256"
+
+    # Source of truth: Settings field
+    secret = getattr(settings, "JWT_SECRET_KEY", None)
+
+    # Optional fallback (only for debugging env wiring)
+    if not secret:
+        secret = os.getenv("JWT_SECRET_KEY") or os.getenv("JWT_SECRET")
+
     if secret:
         s = str(secret)
-        print(f"[JWT] alg={alg} secret_len={len(s)} secret_head={s[:4]} secret_tail={s[-4:]}")
+        print(f"[JWT] alg={alg} secret_present=True secret_len={len(s)}")
     else:
-        print(f"[JWT] alg={alg} secret=None")
+        print(f"[JWT] alg={alg} secret_present=False")
 except Exception as e:
     print(f"[JWT] debug failed: {e}")
 
@@ -56,15 +63,7 @@ app.add_middleware(
 )
 
 # ── 3. STATIC UTILS ──
-@app.get("/curl-gen", include_in_schema=False)
-async def curl_gen_page():
-    path = TOOLS_DIR / "curl-gen.html"
-    if not path.exists():
-        return JSONResponse(
-            {"error": f"Utility file missing at {path}"},
-            status_code=404
-        )
-    return FileResponse(path)
+
 
 # ── 4. ROUTER SYSTEM ──
 API_PREFIX = "/api"
