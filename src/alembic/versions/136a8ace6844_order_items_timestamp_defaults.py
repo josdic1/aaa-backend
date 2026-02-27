@@ -4,11 +4,11 @@ Revision ID: 136a8ace6844
 Revises: 8839c3bb117f
 Create Date: 2026-02-26
 
+Schema-only: ensure server-side UTC defaults for order_items timestamps.
+Do NOT backfill rows here; fresh DB has none and backfill can fail if table order differs.
 """
-from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "136a8ace6844"
@@ -18,48 +18,26 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1) Backfill any existing rows that may have NULLs (defensive)
-    op.execute(
-        """
-        UPDATE order_items
-        SET created_at = COALESCE(created_at, TIMEZONE('utc', now())),
-            updated_at = COALESCE(updated_at, TIMEZONE('utc', now()))
-        WHERE created_at IS NULL OR updated_at IS NULL
-        """
-    )
-
-    # 2) Add server defaults so future inserts never violate NOT NULL
-    op.alter_column(
-        "order_items",
-        "created_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text("TIMEZONE('utc', now())"),
-    )
-
-    op.alter_column(
-        "order_items",
-        "updated_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=sa.text("TIMEZONE('utc', now())"),
-    )
+    op.execute("""
+DO $$
+BEGIN
+  IF to_regclass('public.order_items') IS NOT NULL THEN
+    ALTER TABLE order_items
+      ALTER COLUMN created_at SET DEFAULT TIMEZONE('utc', now());
+    ALTER TABLE order_items
+      ALTER COLUMN updated_at SET DEFAULT TIMEZONE('utc', now());
+  END IF;
+END$$;
+""")
 
 
 def downgrade() -> None:
-    # Remove server defaults (keep NOT NULL as-is to match schema expectations)
-    op.alter_column(
-        "order_items",
-        "updated_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=None,
-    )
-
-    op.alter_column(
-        "order_items",
-        "created_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=False,
-        server_default=None,
-    )
+    op.execute("""
+DO $$
+BEGIN
+  IF to_regclass('public.order_items') IS NOT NULL THEN
+    ALTER TABLE order_items ALTER COLUMN created_at DROP DEFAULT;
+    ALTER TABLE order_items ALTER COLUMN updated_at DROP DEFAULT;
+  END IF;
+END$$;
+""")
