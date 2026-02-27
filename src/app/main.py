@@ -22,6 +22,7 @@ BASE_DIR = APP_DIR.parent.parent           # project root
 TOOLS_DIR = APP_DIR / "tools" / "html"
 
 settings = get_settings()
+print(f"[CORS] ALLOWED_ORIGINS={settings.ALLOWED_ORIGINS}")
 bearer_scheme = HTTPBearer(auto_error=False)
 app = FastAPI()
 
