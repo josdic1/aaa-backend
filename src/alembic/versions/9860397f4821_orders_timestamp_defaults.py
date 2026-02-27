@@ -4,8 +4,8 @@ Revision ID: 9860397f4821
 Revises: 8839c3bb117f
 Create Date: 2026-02-26
 
-Ensures orders.created_at / orders.updated_at have server-side UTC defaults and
-backfills any existing NULLs (defensive).
+Schema-only: ensure server-side UTC defaults for orders timestamps.
+Do NOT backfill rows here; fresh DB has none and backfill can fail if table order differs.
 """
 
 from alembic import op
@@ -18,23 +18,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Make this migration safe on a brand new database.
+    # If the table doesn't exist yet (due to revision ordering), do nothing.
     op.execute("""
 DO $$
 BEGIN
   IF to_regclass('public.orders') IS NOT NULL THEN
-    -- Backfill NULLs (defensive)
-    UPDATE orders
-    SET created_at = TIMEZONE('utc', now())
-    WHERE created_at IS NULL;
-
-    UPDATE orders
-    SET updated_at = TIMEZONE('utc', now())
-    WHERE updated_at IS NULL;
-
-    -- Ensure server defaults
     ALTER TABLE orders
       ALTER COLUMN created_at SET DEFAULT TIMEZONE('utc', now());
-
     ALTER TABLE orders
       ALTER COLUMN updated_at SET DEFAULT TIMEZONE('utc', now());
   END IF;
