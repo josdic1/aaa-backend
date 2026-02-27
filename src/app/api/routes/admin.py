@@ -754,21 +754,29 @@ def admin_daily_view(
     reservations = (
         db.query(Reservation)
         .options(
-            selectinload(Reservation.attendees),
+            selectinload(Reservation.attendees).selectinload(ReservationAttendee.member),
             selectinload(Reservation.seat_assignment).selectinload(SeatAssignment.table),
             selectinload(Reservation.messages),
+            selectinload(Reservation.dining_room),
         )
         .filter(Reservation.date == date)
         .order_by(Reservation.start_time.asc())
         .all()
     )
-
     result = []
     for r in reservations:
         table_info = None
         if r.seat_assignment:
             t = r.seat_assignment.table
             table_info = {"table_id": t.id, "table_name": t.name, "seat_count": t.seat_count}
+
+        primary = next(
+            (a for a in r.attendees if a.member and a.member.relation == "Primary"),
+            r.attendees[0] if r.attendees else None,
+        )
+        primary_name = None
+        if primary:
+            primary_name = primary.member.name if primary.member else primary.guest_name
 
         result.append({
             "reservation_id": r.id,
@@ -779,9 +787,10 @@ def admin_daily_view(
             "status": r.status,
             "notes": r.notes,
             "dining_room_id": r.dining_room_id,
+            "dining_room_name": r.dining_room.name if r.dining_room else None,
+            "primary_member": primary_name,
             "party_size": len(r.attendees),
             "table": table_info,
             "message_count": len(r.messages),
         })
-
     return {"date": date, "reservations": result, "total": len(result)}
