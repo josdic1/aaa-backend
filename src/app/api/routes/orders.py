@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import Optional
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps.auth import get_current_user
+from app.api.deps.auth import get_current_user, get_current_user_optional
 from app.api.deps.db import get_db
 from app.models.order import Order
 from app.models.order_item import OrderItem
@@ -112,9 +113,18 @@ def fire_order(
 def get_chit(
     order_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    token: Optional[str] = Query(default=None),
+    header_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    # Staff/admin only
+    # Accept token from query param (for window.open) or header (normal requests)
+    if header_user:
+        user = header_user
+    elif token:
+        from app.api.deps.auth import get_current_user as _get_user
+        user = _get_user(db=db, token=token)
+    else:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     _require_staff(user)
 
     order = (
