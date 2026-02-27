@@ -91,3 +91,30 @@ def health(
 
     status_code = 200 if db_ok else 503
     return JSONResponse(payload, status_code=status_code)
+
+@router.get("/debug/alembic")
+def debug_alembic(db: Session = Depends(get_db)):
+    # 1) Alembic version table (may not exist)
+    try:
+        current = db.execute(text("SELECT version_num FROM alembic_version")).fetchall()
+        current = [r[0] for r in current]
+    except Exception as e:
+        current = {"error": str(e)}
+
+    # 2) Public tables list
+    try:
+        tables = db.execute(
+            text(
+                """
+                SELECT tablename
+                FROM pg_tables
+                WHERE schemaname='public'
+                ORDER BY tablename;
+                """
+            )
+        ).fetchall()
+        tables = [r[0] for r in tables]
+    except Exception as e:
+        tables = {"error": str(e)}
+
+    return {"alembic_version": current, "tables": tables}
