@@ -122,18 +122,35 @@ def get_current_user_optional(
 
 def require_permission(entity: str, action: Literal["read", "write", "delete"]):
     def dependency(user: User = Depends(get_current_user)) -> str:
-        # Rules for Staff and Admin
-        if user.role in ("admin", "staff"):
+        # 1. Normalize role to lowercase to prevent "Staff" vs "staff" mismatches
+        role = (user.role or "member").lower()
+        
+        # 2. Define entities we recognize for this app
+        # Adding dining_rooms and tables so Staff can see the Floor View
+        allowed_entities = ("reservations", "users", "dining_rooms", "tables", "orders", "order_items")
+        
+        if entity not in allowed_entities:
+            raise NotImplementedError(f"Permission rules not defined for entity: {entity}")
+
+        # 3. Staff/Admin Rule: Access to everything (Operational scope)
+        if role in ("admin", "staff"):
             return "all"
 
-        # Rules for Members
-        if user.role == "member":
+        # 4. Member Rule: Access to own data only
+        if role == "member":
+            # Members can only read/write their own reservations and user profile
             if entity in ("reservations", "users") and action in ("read", "write"):
                 return "own"
             
-        # If none of the above match, block them
+            # Members cannot see the kitchen queue (orders) or administrative dining room data
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Members do not have {action} access to {entity}"
+            )
+
+        # 5. Fallback for unknown roles or blocked users
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Role {user.role} is not permitted to {action} {entity}"
+            detail=f"Access denied: role '{user.role}' is not recognized."
         )
     return dependency
