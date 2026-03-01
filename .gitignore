@@ -13,3 +13,6 @@ wheels/
 __pycache__/
 *.pyc
 .alembic.ini.swp
+# Local snapshots
+*_snapshot_*.tgz
+*_snapshot_copy_*

@@ -30,6 +30,10 @@ class MenuItem(Base):
 
     price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    category: Mapped[Optional[str]] = mapped_column(
+        String(60), nullable=True, index=True
+    )
+
     dietary_restrictions: Mapped[List[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
