@@ -740,9 +740,8 @@ def admin_delete_seat_assignment(
     db.commit()
     return None
 
-
 # ══════════════════════════════════════════════
-# DAILY VIEW
+# DAILY VIEW  (replace the existing @router.get("/daily") function)
 # ══════════════════════════════════════════════
 
 @router.get("/daily")
@@ -754,8 +753,13 @@ def admin_daily_view(
     reservations = (
         db.query(Reservation)
         .options(
-            selectinload(Reservation.attendees).selectinload(ReservationAttendee.member),
-            selectinload(Reservation.seat_assignment).selectinload(SeatAssignment.table),
+            selectinload(Reservation.attendees)
+                .selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+                .selectinload(ReservationAttendee.order)
+                .selectinload(Order.items),
+            selectinload(Reservation.seat_assignment)
+                .selectinload(SeatAssignment.table),
             selectinload(Reservation.messages),
             selectinload(Reservation.dining_room),
         )
@@ -763,12 +767,17 @@ def admin_daily_view(
         .order_by(Reservation.start_time.asc())
         .all()
     )
+
     result = []
     for r in reservations:
         table_info = None
         if r.seat_assignment:
             t = r.seat_assignment.table
-            table_info = {"table_id": t.id, "table_name": t.name, "seat_count": t.seat_count}
+            table_info = {
+                "table_id": t.id,
+                "table_name": t.name,
+                "seat_count": t.seat_count,
+            }
 
         primary = next(
             (a for a in r.attendees if a.member and a.member.relation == "Primary"),
@@ -778,6 +787,41 @@ def admin_daily_view(
         if primary:
             primary_name = primary.member.name if primary.member else primary.guest_name
 
+        # Build orders summary for card chips
+        orders = [a.order for a in r.attendees if a.order]
+        orders_data = []
+        for o in orders:
+            orders_data.append({
+                "id": o.id,
+                "status": o.status,
+                "item_count": len(o.items),
+                "items": [
+                    {
+                        "id": i.id,
+                        "name_snapshot": i.name_snapshot,
+                        "price_cents_snapshot": i.price_cents_snapshot,
+                        "quantity": i.quantity,
+                        "status": i.status,
+                    }
+                    for i in o.items
+                ],
+            })
+
+        # Full attendees for party names on cards
+        attendees_data = [
+            {
+                "id": a.id,
+                "member_id": a.member_id,
+                "guest_name": a.guest_name,
+                "member": {"name": a.member.name} if a.member else None,
+                "dietary_restrictions": a.dietary_restrictions or [],
+            }
+            for a in r.attendees
+        ]
+
+        # Unread message count
+        unread_count = len(r.messages) if r.messages else 0
+
         result.append({
             "reservation_id": r.id,
             "user_id": r.user_id,
@@ -786,11 +830,17 @@ def admin_daily_view(
             "end_time": r.end_time,
             "status": r.status,
             "notes": r.notes,
+            "meal_type": getattr(r, "meal_type", None),
             "dining_room_id": r.dining_room_id,
+            "dining_room": {"name": r.dining_room.name} if r.dining_room else None,
             "dining_room_name": r.dining_room.name if r.dining_room else None,
             "primary_member": primary_name,
             "party_size": len(r.attendees),
             "table": table_info,
             "message_count": len(r.messages),
+            "unread_message_count": unread_count,
+            "attendees": attendees_data,
+            "orders": orders_data,
         })
+
     return {"date": date, "reservations": result, "total": len(result)}
