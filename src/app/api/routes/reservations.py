@@ -86,8 +86,11 @@ def get_reservation(
     reservation = db.get(Reservation, reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    if reservation.user_id != current_user.id:
+    
+    is_staff = current_user.role in ("admin", "staff")
+    if not is_staff and reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
+    
     return reservation
 
 
