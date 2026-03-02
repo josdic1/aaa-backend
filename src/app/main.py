@@ -24,7 +24,6 @@ TOOLS_DIR = APP_DIR / "tools" / "html"
 settings = get_settings()
 print(f"[CORS] ALLOWED_ORIGINS={settings.ALLOWED_ORIGINS}")
 bearer_scheme = HTTPBearer(auto_error=False)
-app = FastAPI()
 
 # --- JWT DEBUG (dev only): verify server is reading the env you expect ---
 try:
