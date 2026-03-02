@@ -35,16 +35,22 @@ def _bootstrap_query(db: Session, reservation_id: int):
     )
 
 
-# ── LIST ──────────────────────────────────────────────────
-@router.get("", response_model=List[ReservationRead])
-def list_reservations(
-    status: Optional[str] = Query(None),
-    from_date: Optional[date] = Query(None),
-    to_date: Optional[date] = Query(None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    q = db.query(Reservation).filter(Reservation.user_id == current_user.id)
+def _list_query(db: Session, user_id: int, status=None, from_date=None, to_date=None, all_users: Optional[bool] = False):
+    """List reservations with attendees + orders eagerly loaded for card display."""
+    q = (
+        db.query(Reservation)
+        .options(
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.member),
+            selectinload(Reservation.attendees)
+            .selectinload(ReservationAttendee.order)
+            .selectinload(Order.items),
+            selectinload(Reservation.dining_room),
+            selectinload(Reservation.messages),
+        )
+    )
+    if not all_users:
+        q = q.filter(Reservation.user_id == user_id)
     if status:
         q = q.filter(Reservation.status == status)
     if from_date:
@@ -52,6 +58,29 @@ def list_reservations(
     if to_date:
         q = q.filter(Reservation.date <= to_date)
     return q.order_by(Reservation.date.asc(), Reservation.start_time.asc()).all()
+
+
+# ── LIST ──────────────────────────────────────────────────
+@router.get("", response_model=List[ReservationRead])
+def list_reservations(
+    status: Optional[str] = Query(None),
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    all: Optional[bool] = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    is_staff = current_user.role in ("admin", "staff")
+    # only staff can request all=true
+    fetch_all = all and is_staff
+    return _list_query(
+        db,
+        user_id=current_user.id,
+        status=status,
+        from_date=from_date,
+        to_date=to_date,
+        all_users=fetch_all,
+    )
 
 
 # ── CREATE ────────────────────────────────────────────────
@@ -86,11 +115,11 @@ def get_reservation(
     reservation = db.get(Reservation, reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    
+
     is_staff = current_user.role in ("admin", "staff")
     if not is_staff and reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
-    
+
     return reservation
 
 
@@ -105,14 +134,15 @@ def update_reservation(
     reservation = db.get(Reservation, reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    if reservation.user_id != current_user.id:
+
+    is_staff = current_user.role in ("admin", "staff")
+    if not is_staff and reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
     data = payload.model_dump(exclude_unset=True)
 
-    # Lifecycle lock: once confirmed or cancelled, members can only
-    # switch between "cancelled" and "draft" — no editing other fields
-    if reservation.status != "draft":
+    # Lifecycle lock for members only — staff can update freely
+    if not is_staff and reservation.status != "draft":
         allowed_fields = {"status", "dining_room_id"}
         disallowed = set(data.keys()) - allowed_fields
         if disallowed:
@@ -145,9 +175,12 @@ def delete_reservation(
     reservation = db.get(Reservation, reservation_id)
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
-    if reservation.user_id != current_user.id:
+
+    is_staff = current_user.role in ("admin", "staff")
+    if not is_staff and reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
-    if reservation.status not in ("draft", "cancelled"):
+
+    if not is_staff and reservation.status not in ("draft", "cancelled"):
         raise HTTPException(
             status_code=409,
             detail="Cannot delete a confirmed reservation.",
@@ -169,12 +202,11 @@ def get_reservation_bootstrap(
     if not reservation:
         raise HTTPException(status_code=404, detail="Reservation not found")
 
-    if reservation.user_id != current_user.id:
+    is_staff = current_user.role in ("admin", "staff")
+    if not is_staff and reservation.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
 
-    # Ensure every attendee has an order. Wrap each insert in its own
-    # try/except so a concurrent request that already created the order
-    # does not blow up the whole bootstrap.
+    # Ensure every attendee has an order
     created = False
     for attendee in reservation.attendees:
         existing = db.query(Order).filter(Order.attendee_id == attendee.id).first()
